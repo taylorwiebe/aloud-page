@@ -23,7 +23,7 @@ import (
 	"github.com/taylorwiebe/planreader/internal/reader"
 )
 
-const maxDocumentBytes = 2 << 20
+const maxDocumentBytes = reader.MaxDocumentBytes
 const maxPreparedDocumentBytes = 10 << 20
 
 type options struct {
@@ -204,6 +204,11 @@ func runReader(config options, args []string, stdout, stderr io.Writer) error {
 	document.DocumentRevision = document.State.Revision()
 	document.FriendlyRevision = document.State.FriendlyRevision()
 	document.CanEdit = config.agentManaged
+	document.Regenerate = func(regenerationContext context.Context, markdown string, sections []narration.SourceSection) (narration.Narration, error) {
+		return runner.Generate(regenerationContext, markdown, narration.ReaderOptions{
+			Depth: depthPrompt, Audience: config.audience, Sections: sections,
+		})
+	}
 	return serveReader(document, config.noOpen, config.agentManaged, stdout, stderr)
 }
 

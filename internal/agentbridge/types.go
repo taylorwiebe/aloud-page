@@ -52,6 +52,10 @@ type Proposal struct {
 	TurnID           string    `json:"turn_id"`
 	Digest           string    `json:"digest"`
 	Scope            string    `json:"scope,omitempty"`
+	BaseSourceDigest string    `json:"base_source_digest,omitempty"`
+	SourceDiff       string    `json:"source_diff,omitempty"`
+	FriendlyEffect   string    `json:"friendly_effect,omitempty"`
+	ChangesPlan      bool      `json:"changes_plan,omitempty"`
 	DocumentRevision string    `json:"document_revision"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	Cancelled        bool      `json:"cancelled,omitempty"`

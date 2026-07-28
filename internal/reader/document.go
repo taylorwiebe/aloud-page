@@ -1,6 +1,8 @@
 package reader
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -15,12 +18,15 @@ import (
 )
 
 const maxSelectionBytes = 64 << 10
+const MaxDocumentBytes = 2 << 20
 
 var (
 	ErrInvalidSelection   = errors.New("invalid selection")
 	ErrAmbiguousSelection = errors.New("selection does not match its anchor")
 	ErrStaleRevision      = errors.New("document revision is stale")
 	ErrSourceUnavailable  = errors.New("authoritative source is unavailable")
+	ErrAlreadyApplied     = errors.New("source change was already applied")
+	ErrFriendlyStale      = errors.New("friendly narration is stale")
 )
 
 // DocumentState contains authoritative metadata. None of its fields are serialized
@@ -34,6 +40,27 @@ type DocumentState struct {
 	friendlyRevision string
 	sections         map[string]narration.SourceSection
 	narration        narration.Narration
+	friendlyStale    bool
+	appliedChanges   map[string]string
+}
+
+type ApprovedSourceChange struct {
+	ProposalID       string
+	ProposalDigest   string
+	BaseSourceDigest string
+	ChangesPlan      bool
+}
+
+type RegenerateNarration func(context.Context, string, []narration.SourceSection) (narration.Narration, error)
+
+type DocumentSnapshot struct {
+	Source           string
+	SourceDigest     string `json:"-"`
+	Revision         string
+	FriendlyRevision string
+	FriendlyStale    bool
+	Sections         []narration.SourceSection
+	Narration        narration.Narration
 }
 
 type OriginalSelectionRequest struct {
@@ -101,7 +128,161 @@ func NewDocumentState(path string, raw []byte, sections []narration.SourceSectio
 		friendlyRevision: friendlyRevision,
 		sections:         byID,
 		narration:        friendly,
+		appliedChanges:   make(map[string]string),
 	}, nil
+}
+
+func (s *DocumentState) SourceDigest() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return hex.EncodeToString(s.contentDigest[:])
+}
+
+func (s *DocumentState) Snapshot() DocumentSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotLocked()
+}
+
+func (s *DocumentState) ApplyApprovedSourceChange(ctx context.Context, change ApprovedSourceChange, apply func(context.Context) error, regenerate RegenerateNarration) (DocumentSnapshot, error) {
+	if change.ProposalID == "" || change.ProposalDigest == "" || change.BaseSourceDigest == "" || apply == nil {
+		return DocumentSnapshot{}, errors.New("approved source change is incomplete")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prior, ok := s.appliedChanges[change.ProposalID]; ok {
+		if prior == change.ProposalDigest {
+			return s.snapshotLocked(), ErrAlreadyApplied
+		}
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	if hex.EncodeToString(s.contentDigest[:]) != change.BaseSourceDigest {
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	if _, err := readAuthoritativeSource(s.canonicalPath, s.contentDigest); err != nil {
+		return s.snapshotLocked(), err
+	}
+	if err := apply(ctx); err != nil {
+		return s.snapshotLocked(), err
+	}
+	s.appliedChanges[change.ProposalID] = change.ProposalDigest
+	if !change.ChangesPlan {
+		return s.snapshotLocked(), nil
+	}
+	raw, err := readAuthoritativeSource(s.canonicalPath, [sha256.Size]byte{})
+	if err != nil {
+		return s.snapshotLocked(), err
+	}
+	if sha256.Sum256(raw) == s.contentDigest {
+		return s.snapshotLocked(), nil
+	}
+	if err := s.publishSourceLocked(raw); err != nil {
+		return s.snapshotLocked(), err
+	}
+	return s.regenerateLocked(ctx, regenerate)
+}
+
+func (s *DocumentState) RetryFriendlyNarration(ctx context.Context, sourceDigest string, regenerate RegenerateNarration) (DocumentSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.friendlyStale {
+		return s.snapshotLocked(), nil
+	}
+	if sourceDigest != hex.EncodeToString(s.contentDigest[:]) {
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	raw, err := readAuthoritativeSource(s.canonicalPath, s.contentDigest)
+	if err != nil {
+		return s.snapshotLocked(), err
+	}
+	if !bytes.Equal(raw, s.rawSource) {
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	return s.regenerateLocked(ctx, regenerate)
+}
+
+func (s *DocumentState) regenerateLocked(ctx context.Context, regenerate RegenerateNarration) (DocumentSnapshot, error) {
+	if regenerate == nil {
+		s.friendlyStale = true
+		return s.snapshotLocked(), ErrFriendlyStale
+	}
+	sources := orderedSections(s.sections)
+	generated, err := regenerate(ctx, string(s.rawSource), sources)
+	if err == nil {
+		err = narration.ValidateSourceMappings(generated, sources)
+	}
+	if err != nil {
+		s.friendlyStale = true
+		return s.snapshotLocked(), fmt.Errorf("%w: %v", ErrFriendlyStale, err)
+	}
+	friendlyRevision, err := opaqueRevision()
+	if err != nil {
+		s.friendlyStale = true
+		return s.snapshotLocked(), err
+	}
+	s.narration = generated
+	s.friendlyRevision = friendlyRevision
+	s.friendlyStale = false
+	return s.snapshotLocked(), nil
+}
+
+func (s *DocumentState) publishSourceLocked(raw []byte) error {
+	sections := narration.SplitMarkdownSections(string(raw))
+	byID := make(map[string]narration.SourceSection, len(sections))
+	for _, section := range sections {
+		byID[section.ID] = section
+	}
+	revision, err := opaqueRevision()
+	if err != nil {
+		return err
+	}
+	s.rawSource = append([]byte(nil), raw...)
+	s.contentDigest = sha256.Sum256(raw)
+	s.sections = byID
+	s.revision = revision
+	s.friendlyStale = true
+	return nil
+}
+
+func (s *DocumentState) snapshotLocked() DocumentSnapshot {
+	return DocumentSnapshot{
+		Source: string(s.rawSource), SourceDigest: hex.EncodeToString(s.contentDigest[:]),
+		Revision: s.revision, FriendlyRevision: s.friendlyRevision, FriendlyStale: s.friendlyStale,
+		Sections: orderedSections(s.sections), Narration: s.narration,
+	}
+}
+
+func orderedSections(sections map[string]narration.SourceSection) []narration.SourceSection {
+	result := make([]narration.SourceSection, 0, len(sections))
+	for _, section := range sections {
+		result = append(result, section)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].StartByte < result[j].StartByte })
+	return result
+}
+
+func readAuthoritativeSource(path string, expected [sha256.Size]byte) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, ErrSourceUnavailable
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, ErrSourceUnavailable
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxDocumentBytes {
+		return nil, ErrSourceUnavailable
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, MaxDocumentBytes+1))
+	if err != nil || len(raw) > MaxDocumentBytes || strings.TrimSpace(string(raw)) == "" {
+		return nil, ErrSourceUnavailable
+	}
+	if expected != ([sha256.Size]byte{}) && sha256.Sum256(raw) != expected {
+		return nil, ErrStaleRevision
+	}
+	return raw, nil
 }
 
 func (s *DocumentState) Revision() string {
@@ -120,12 +301,13 @@ func (s *DocumentState) VerifyCurrentSource() error {
 	s.mu.RLock()
 	path := s.canonicalPath
 	digest := s.contentDigest
+	sourceLength := len(s.rawSource)
 	s.mu.RUnlock()
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return ErrSourceUnavailable
 	}
-	if info.Size() != int64(len(s.rawSource)) {
+	if info.Size() != int64(sourceLength) {
 		return ErrStaleRevision
 	}
 	file, err := os.Open(path)
@@ -133,7 +315,7 @@ func (s *DocumentState) VerifyCurrentSource() error {
 		return ErrSourceUnavailable
 	}
 	defer file.Close()
-	raw, err := io.ReadAll(io.LimitReader(file, int64(len(s.rawSource)+1)))
+	raw, err := io.ReadAll(io.LimitReader(file, int64(sourceLength+1)))
 	if err != nil {
 		return ErrSourceUnavailable
 	}

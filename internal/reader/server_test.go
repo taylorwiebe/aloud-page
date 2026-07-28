@@ -1,10 +1,12 @@
 package reader
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,44 @@ import (
 	"github.com/taylorwiebe/planreader/internal/agentbridge"
 	"github.com/taylorwiebe/planreader/internal/narration"
 )
+
+func TestReaderDataRefreshesAtomicallyFromDocumentState(t *testing.T) {
+	state := testDocumentState(t, "# One\n\nAlpha.\n", friendlyForSource("Alpha."))
+	handler := newReaderHandler(ReaderDocument{FileName: "plan.md", State: state}, "token")
+	before := readReaderDocument(t, handler, "/reader/token/data.json")
+	_, err := state.ApplyApprovedSourceChange(context.Background(), ApprovedSourceChange{
+		ProposalID: "proposal-1", ProposalDigest: "digest-1", BaseSourceDigest: state.SourceDigest(), ChangesPlan: true,
+	}, func(context.Context) error {
+		return os.WriteFile(state.canonicalPath, []byte("# One\n\nChanged.\n"), 0o600)
+	}, func(context.Context, string, []narration.SourceSection) (narration.Narration, error) {
+		return friendlyForSource("Changed."), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := readReaderDocument(t, handler, "/reader/token/data.json")
+	if after.DocumentRevision == before.DocumentRevision || after.FriendlyRevision == before.FriendlyRevision {
+		t.Fatalf("reader revisions did not refresh: before=%#v after=%#v", before, after)
+	}
+	if len(after.Sources) != 1 || !strings.Contains(after.Sources[0].HTML, "Changed.") ||
+		after.Narration.Sections[0].Sentences[0] != "Changed." || after.FriendlyStale {
+		t.Fatalf("refreshed reader = %#v", after)
+	}
+}
+
+func readReaderDocument(t *testing.T, handler http.Handler, path string) ReaderDocument {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d", path, recorder.Code)
+	}
+	var document ReaderDocument
+	if err := json.NewDecoder(recorder.Body).Decode(&document); err != nil {
+		t.Fatal(err)
+	}
+	return document
+}
 
 func TestReaderSpeechReadsHeadingsAndAvoidsRepeatedListPrefixes(t *testing.T) {
 	script, err := fs.ReadFile(webFiles, "web/reader.js")

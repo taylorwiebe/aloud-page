@@ -32,9 +32,11 @@ type ReaderDocument struct {
 	Sources          []RenderedSourceSection `json:"sources"`
 	DocumentRevision string                  `json:"document_revision,omitempty"`
 	FriendlyRevision string                  `json:"friendly_revision,omitempty"`
+	FriendlyStale    bool                    `json:"friendly_stale,omitempty"`
 	CanEdit          bool                    `json:"can_edit"`
 	AgentManaged     bool                    `json:"agent_managed,omitempty"`
 	State            *DocumentState          `json:"-"`
+	Regenerate       RegenerateNarration     `json:"-"`
 }
 
 type RenderedSourceSection struct {
@@ -77,11 +79,6 @@ func newReaderHandlerWithSpeechAndLifecycle(document ReaderDocument, token strin
 func newReaderHandlerWithBridge(document ReaderDocument, token string, speechService *speech.Service, lifecycle *agentLifecycle, bridge http.Handler) http.Handler {
 	prefix := "/reader/" + token + "/"
 	document.AgentManaged = lifecycle != nil
-	data, err := json.Marshal(document)
-	if err != nil {
-		panic(fmt.Sprintf("encoding reader document: %v", err))
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asset, ok := strings.CutPrefix(r.URL.Path, prefix)
 		if !ok {
@@ -120,6 +117,16 @@ func newReaderHandlerWithBridge(document ReaderDocument, token string, speechSer
 		}
 
 		if asset == "data.json" {
+			current, err := currentReaderDocument(document)
+			if err != nil {
+				http.Error(w, "reader document is unavailable", http.StatusInternalServerError)
+				return
+			}
+			data, err := json.Marshal(current)
+			if err != nil {
+				http.Error(w, "reader document is unavailable", http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			_, _ = w.Write(data)
 			return
@@ -140,6 +147,23 @@ func newReaderHandlerWithBridge(document ReaderDocument, token string, speechSer
 		}
 		_, _ = w.Write(content)
 	})
+}
+
+func currentReaderDocument(document ReaderDocument) (ReaderDocument, error) {
+	if document.State == nil {
+		return document, nil
+	}
+	snapshot := document.State.Snapshot()
+	rendered, err := RenderSourceSections(snapshot.Sections)
+	if err != nil {
+		return ReaderDocument{}, err
+	}
+	document.Narration = snapshot.Narration
+	document.Sources = rendered
+	document.DocumentRevision = snapshot.Revision
+	document.FriendlyRevision = snapshot.FriendlyRevision
+	document.FriendlyStale = snapshot.FriendlyStale
+	return document, nil
 }
 
 func resolveBrowserSelection(w http.ResponseWriter, r *http.Request, state *DocumentState) {

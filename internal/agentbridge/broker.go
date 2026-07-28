@@ -152,6 +152,10 @@ func (b *Broker) Publish(event Event) (Event, error) {
 		if event.Proposal == nil || event.Proposal.ID == "" || event.Proposal.TurnID != event.TurnID || event.Proposal.Digest == "" {
 			return Event{}, ErrInvalidState
 		}
+		if event.Proposal.ChangesPlan && (event.Proposal.BaseSourceDigest == "" || event.Proposal.SourceDiff == "" ||
+			event.Proposal.Scope == "" || event.Proposal.FriendlyEffect == "") {
+			return Event{}, ErrInvalidState
+		}
 		b.proposals[event.Proposal.ID] = *event.Proposal
 	}
 	b.appendEventLocked(event)
