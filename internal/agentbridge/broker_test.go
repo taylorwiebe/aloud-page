@@ -191,3 +191,54 @@ func TestBrokerWaitDecisionDeliversApprovedProposalDecision(t *testing.T) {
 		t.Fatalf("WaitDecision() = %#v, %v", got, err)
 	}
 }
+
+func TestBrokerConservativelyNormalizesUnknownProviderEvent(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "question"})
+	got, err := broker.Publish(Event{
+		ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: "provider_magic",
+		Text: "Provider reported an unfamiliar state.", Diff: "must not become actionable",
+		Proposal:    &Proposal{ID: "action-1", TurnID: turn.ID, Digest: "digest"},
+		Interrupted: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != EventProgress || got.Text != UnknownProviderEventText || got.Diff != "" || got.Proposal != nil || got.Interrupted {
+		t.Fatalf("normalized event = %#v", got)
+	}
+	if _, ok := broker.proposals["action-1"]; ok {
+		t.Fatal("unknown provider event created an actionable proposal")
+	}
+}
+
+func TestBrokerNativeAuthorizationDenialCannotBecomeCompletion(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "change it"})
+	proposal := Proposal{
+		ID: "action-1", TurnID: turn.ID, Digest: "digest-1",
+		DocumentRevision: "rev-1", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if _, err := broker.Publish(Event{ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: EventProposal, Proposal: &proposal}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Decide(Decision{
+		ID: "decision-1", ActionID: proposal.ID, ProposalDigest: proposal.Digest,
+		DocumentRevision: proposal.DocumentRevision, Approved: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	denied, err := broker.Publish(Event{
+		ID: "event-2", TurnID: turn.ID, Sequence: 2, Type: EventAuthorizationDenied,
+		Text: "The provider denied filesystem authorization.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denied.Type != EventAuthorizationDenied {
+		t.Fatalf("denial = %#v", denied)
+	}
+	if _, err := broker.Publish(Event{ID: "event-3", TurnID: turn.ID, Sequence: 3, Type: EventCompleted}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("completion after native denial error = %v", err)
+	}
+}

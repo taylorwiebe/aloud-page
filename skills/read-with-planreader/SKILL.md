@@ -35,24 +35,60 @@ Use Planreader as the single source of truth for preparing the human-readable na
 
 - After the reader reports that its conversation bridge is ready, run
   `planreader bridge probe --provider PROVIDER`.
-- Read the descriptor path printed by Planreader only for bridge commands. Do
-  not print its contents, copy its task secret into chat, or persist it. The
-  descriptor is deleted when the reader exits.
-- Continue only when the result says the current task is supported. Never
-  resume, fork, or start another provider session as a fallback.
-- Keep this exact task inside the bridge loop: wait for a reader turn, handle it
-  with the task's existing conversation, working directory, instructions,
-  tools, and native authorization, then publish normalized progress and answer
-  events through Planreader.
+- Treat that probe as the capability handshake. Continue only when it reports
+  this current task as supported, and use only the capabilities it returns.
+  Codex is currently supported when the probe identifies the current
+  `CODEX_THREAD_ID`. Claude is currently unsupported: say so visibly and stop
+  attachment. Never resume, fork, or start another provider session as a
+  fallback.
+- Keep the descriptor path printed by Planreader only for bridge commands. Pass
+  it as `--descriptor PATH`; never print or read the descriptor contents, copy
+  its task secret into chat or command arguments, or persist it. The descriptor
+  is deleted when the reader exits.
+- Keep this exact task inside the following loop, preserving its prior
+  conversation, working directory, project instructions, tools, and native
+  authorization:
+  1. Run `planreader bridge wait --descriptor PATH` and decode the returned
+     turn. A closed, disconnected, or cancelled reader ends the loop; never
+     attach a different task.
+  2. Publish a `progress` event before work and as meaningful work advances.
+     Publish only the normalized event types `progress`, `text`, `proposal`,
+     `completed`, `failed`, `cancelled`, and `authorization_denied`, with stable
+     event and turn IDs and strictly increasing sequence numbers.
+  3. Answer questions using this task's existing context. Stream safe answer
+     chunks as `text` events. Treat unknown provider-native events as
+     conservative progress text only; they must never create a proposal,
+     approval, or action transition.
+  4. Before an edit or other consequential action, publish one immutable
+     `proposal`. Then run
+     `planreader bridge decision --descriptor PATH --action ACTION_ID`. Execute
+     only an approved decision whose proposal digest and document revision
+     still match.
+  5. A reader approval records semantic intent only. Request and obey every
+     native Codex authorization normally. If native authorization is denied,
+     publish `authorization_denied` and do not report completion or retry by
+     changing providers.
+  6. Publish exactly one terminal event: `completed`, `failed`, `cancelled`, or
+     `authorization_denied`. On cancellation, interrupt in-flight work before
+     publishing `cancelled`. Then wait for the next turn unless the reader has
+     disconnected or closed.
+- Send event JSON on standard input to
+  `planreader bridge publish --descriptor PATH`. Provider-specific event
+  translation stays here at the skill boundary; the reader receives only the
+  normalized contract above.
 - A Planreader approval records the reader's intent for one proposal. It never
   replaces or bypasses Claude or Codex permission prompts.
-- Stop the bridge loop when the reader closes, disconnects, or asks to cancel.
-  Reconnect only with the same attachment identity.
+- Reconnect only through the same descriptor, attachment identity, task secret,
+  and current task. If any identity changes, fail closed instead of relabeling
+  the new task.
 
 ## Own the reader process
 
 - Never launch Planreader in the background without retaining its process or session handle.
 - Before the Claude or Codex session ends, interrupt any Planreader process that this session launched and wait for it to exit. Do this even after an error or an interrupted task.
+- When the bridge loop ends, stop in-flight work, publish cancellation when the
+  bridge still accepts it, interrupt the owned Planreader process, wait for it
+  to exit, and confirm that its private descriptor was removed.
 - When the user says they are done reading, close the reader process immediately.
 - Do not stop a manually launched Planreader process. Agent cleanup applies only to commands started with `--agent-managed` by the current session.
 - If cleanup cannot be confirmed, tell the user instead of silently leaving a process behind.

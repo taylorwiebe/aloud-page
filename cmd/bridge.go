@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -33,54 +34,60 @@ func newBridgeCommandWithClient(stdout io.Writer, client *http.Client) *cobra.Co
 }
 
 func newBridgeDecisionCommand(stdout io.Writer, client *http.Client) *cobra.Command {
-	var endpoint, secret, actionID string
+	var descriptorPath, actionID string
 	command := &cobra.Command{
 		Use:   "decision",
 		Short: "Wait for the reader's decision on one proposal",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			descriptor, err := readBridgeDescriptor(descriptorPath)
+			if err != nil {
+				return err
+			}
 			values := url.Values{}
 			values.Set("action_id", actionID)
-			return bridgeRequest(command.Context(), client, http.MethodGet, endpoint+"/task/decisions?"+values.Encode(), secret, nil, stdout)
+			return bridgeRequest(command.Context(), client, http.MethodGet, descriptor.Endpoint+"/task/decisions?"+values.Encode(), descriptor.TaskSecret, nil, stdout)
 		},
 	}
-	command.Flags().StringVar(&endpoint, "endpoint", "", "private reader bridge endpoint")
-	command.Flags().StringVar(&secret, "secret", "", "private task secret")
+	command.Flags().StringVar(&descriptorPath, "descriptor", "", "owner-only reader bridge descriptor")
 	command.Flags().StringVar(&actionID, "action", "", "proposal action identity")
-	_ = command.MarkFlagRequired("endpoint")
-	_ = command.MarkFlagRequired("secret")
+	_ = command.MarkFlagRequired("descriptor")
 	_ = command.MarkFlagRequired("action")
 	return command
 }
 
 func newBridgeWaitCommand(stdout io.Writer, client *http.Client) *cobra.Command {
-	var endpoint, secret, attachmentID string
+	var descriptorPath string
 	command := &cobra.Command{
 		Use:   "wait",
 		Short: "Wait for a turn from the attached reader",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			descriptor, err := readBridgeDescriptor(descriptorPath)
+			if err != nil {
+				return err
+			}
 			values := url.Values{}
-			values.Set("attachment_id", attachmentID)
-			return bridgeRequest(command.Context(), client, http.MethodGet, endpoint+"/task/turns/wait?"+values.Encode(), secret, nil, stdout)
+			values.Set("attachment_id", descriptor.AttachmentID)
+			return bridgeRequest(command.Context(), client, http.MethodGet, descriptor.Endpoint+"/task/turns/wait?"+values.Encode(), descriptor.TaskSecret, nil, stdout)
 		},
 	}
-	command.Flags().StringVar(&endpoint, "endpoint", "", "private reader bridge endpoint")
-	command.Flags().StringVar(&secret, "secret", "", "private task secret")
-	command.Flags().StringVar(&attachmentID, "attachment", "", "exact attachment identity")
-	_ = command.MarkFlagRequired("endpoint")
-	_ = command.MarkFlagRequired("secret")
-	_ = command.MarkFlagRequired("attachment")
+	command.Flags().StringVar(&descriptorPath, "descriptor", "", "owner-only reader bridge descriptor")
+	_ = command.MarkFlagRequired("descriptor")
 	return command
 }
 
 func newBridgePublishCommand(stdout io.Writer, client *http.Client) *cobra.Command {
-	var endpoint, secret string
+	var descriptorPath string
 	command := &cobra.Command{
 		Use:   "publish",
 		Short: "Publish one normalized event to the attached reader",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			descriptor, err := readBridgeDescriptor(descriptorPath)
+			if err != nil {
+				return err
+			}
 			body, err := io.ReadAll(io.LimitReader(command.InOrStdin(), (64<<10)+1))
 			if err != nil {
 				return err
@@ -88,14 +95,48 @@ func newBridgePublishCommand(stdout io.Writer, client *http.Client) *cobra.Comma
 			if len(body) > 64<<10 {
 				return errors.New("event exceeds 64 KiB")
 			}
-			return bridgeRequest(command.Context(), client, http.MethodPost, endpoint+"/task/events", secret, body, stdout)
+			return bridgeRequest(command.Context(), client, http.MethodPost, descriptor.Endpoint+"/task/events", descriptor.TaskSecret, body, stdout)
 		},
 	}
-	command.Flags().StringVar(&endpoint, "endpoint", "", "private reader bridge endpoint")
-	command.Flags().StringVar(&secret, "secret", "", "private task secret")
-	_ = command.MarkFlagRequired("endpoint")
-	_ = command.MarkFlagRequired("secret")
+	command.Flags().StringVar(&descriptorPath, "descriptor", "", "owner-only reader bridge descriptor")
+	_ = command.MarkFlagRequired("descriptor")
 	return command
+}
+
+func readBridgeDescriptor(path string) (agentbridge.Descriptor, error) {
+	var descriptor agentbridge.Descriptor
+	path = filepath.Clean(path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return descriptor, fmt.Errorf("reading bridge descriptor: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return descriptor, errors.New("bridge descriptor must be a regular file")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return descriptor, errors.New("bridge descriptor must be owner-only")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return descriptor, fmt.Errorf("opening bridge descriptor: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(io.LimitReader(file, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&descriptor); err != nil {
+		return descriptor, fmt.Errorf("decoding bridge descriptor: %w", err)
+	}
+	if descriptor.Version != agentbridge.ProtocolVersion {
+		return descriptor, fmt.Errorf("unsupported bridge protocol %q", descriptor.Version)
+	}
+	if descriptor.AttachmentID == "" || descriptor.Endpoint == "" || descriptor.TaskSecret == "" {
+		return descriptor, errors.New("bridge descriptor is incomplete")
+	}
+	endpoint, err := url.Parse(descriptor.Endpoint)
+	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" {
+		return descriptor, errors.New("bridge descriptor endpoint must use loopback HTTP")
+	}
+	return descriptor, nil
 }
 
 func bridgeRequest(ctx context.Context, client *http.Client, method, endpoint, secret string, body []byte, stdout io.Writer) error {

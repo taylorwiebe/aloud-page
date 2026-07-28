@@ -141,6 +141,7 @@ func (b *Broker) Publish(event Event) (Event, error) {
 	if b.active == nil || event.TurnID != b.active.ID || event.ID == "" {
 		return Event{}, ErrInvalidState
 	}
+	event = normalizeProviderEvent(event)
 	expected := uint64(1)
 	if len(b.events) > 0 {
 		expected = b.events[len(b.events)-1].Sequence + 1
@@ -329,5 +330,20 @@ func (b *Broker) signalLocked() {
 }
 
 func terminalEvent(eventType EventType) bool {
-	return eventType == EventCompleted || eventType == EventFailed || eventType == EventCancelled
+	return eventType == EventCompleted || eventType == EventFailed || eventType == EventCancelled ||
+		eventType == EventAuthorizationDenied
+}
+
+func normalizeProviderEvent(event Event) Event {
+	switch event.Type {
+	case EventProgress, EventText, EventProposal, EventCompleted, EventFailed, EventCancelled, EventDisconnected, EventAuthorizationDenied:
+		return event
+	default:
+		event.Type = EventProgress
+		event.Text = UnknownProviderEventText
+		event.Diff = ""
+		event.Proposal = nil
+		event.Interrupted = false
+		return event
+	}
 }

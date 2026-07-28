@@ -38,14 +38,17 @@ type Turn struct {
 type EventType string
 
 const (
-	EventProgress     EventType = "progress"
-	EventText         EventType = "text"
-	EventProposal     EventType = "proposal"
-	EventCompleted    EventType = "completed"
-	EventFailed       EventType = "failed"
-	EventCancelled    EventType = "cancelled"
-	EventDisconnected EventType = "disconnected"
+	EventProgress            EventType = "progress"
+	EventText                EventType = "text"
+	EventProposal            EventType = "proposal"
+	EventCompleted           EventType = "completed"
+	EventFailed              EventType = "failed"
+	EventCancelled           EventType = "cancelled"
+	EventDisconnected        EventType = "disconnected"
+	EventAuthorizationDenied EventType = "authorization_denied"
 )
+
+const UnknownProviderEventText = "The attached agent reported an unrecognized status. No action was taken."
 
 type Proposal struct {
 	ID               string    `json:"id"`

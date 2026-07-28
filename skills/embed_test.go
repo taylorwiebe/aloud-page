@@ -21,3 +21,34 @@ func TestEmbeddedSkillIsRepositoryIndependent(t *testing.T) {
 		t.Fatalf("skill is not installed-command based:\n%s", text)
 	}
 }
+
+func TestEmbeddedSkillDefinesFailClosedCurrentTaskBridgeLoop(t *testing.T) {
+	data, err := fs.ReadFile(Files, "read-with-planreader/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"capability handshake",
+		"Claude is currently unsupported",
+		"--descriptor PATH",
+		"never print or read the descriptor contents",
+		"conversation, working directory, project instructions, tools, and native",
+		"`progress`, `text`, `proposal`",
+		"`completed`, `failed`, `cancelled`, or",
+		"`authorization_denied`",
+		"unknown provider-native events",
+		"strictly increasing sequence numbers",
+		"same descriptor, attachment identity, task secret",
+		"confirm that its private descriptor was removed",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("embedded conversation loop missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"--secret", "--endpoint", "session resume", "start a replacement"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("embedded conversation loop contains forbidden fallback or credential flag %q", forbidden)
+		}
+	}
+}

@@ -90,11 +90,19 @@ resume or launch a replacement session.
 
 | Provider | Status | Evidence required |
 |---|---|---|
-| Codex | Capability gate available | Current `CODEX_THREAD_ID`, original workspace and tools, streamed bridge events, native authorization, cancellation, and same-identity reconnect |
-| Claude Code | Not yet supported | A verified current-session identity plus the same end-to-end gates as Codex |
+| Codex | Supported for the current task only | Current `CODEX_THREAD_ID`, original conversation and workspace, project instructions and tools, normalized streamed events, native authorization, cancellation, and same-identity reconnect |
+| Claude Code | Unsupported | A verified current-session identity plus the same end-to-end gates as Codex |
 
 An installed provider or a resumable session is not sufficient evidence. A
 provider is enabled only while its current task passes every gate.
+
+The task receives an owner-only descriptor path; its separate task secret is
+never placed in command arguments or conversation text. Reader approvals apply
+to one immutable semantic proposal and cannot override a native provider
+authorization denial. Unrecognized provider events are rendered as
+non-actionable status, and reconnect succeeds only for the same attachment and
+task credential. Planreader never starts, resumes, or relabels another session
+as a fallback.
 
 ## Development
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,7 +33,7 @@ func TestBridgeProbeReportsCurrentCodexTask(t *testing.T) {
 	}
 }
 
-func TestBridgeWaitUsesTaskSecretAndAttachmentIdentity(t *testing.T) {
+func TestBridgeWaitUsesOwnerOnlyDescriptor(t *testing.T) {
 	var gotSecret, gotAttachment string
 	client := testHTTPClient(func(r *http.Request) *http.Response {
 		gotSecret = r.Header.Get("X-Planreader-Task-Secret")
@@ -41,7 +43,7 @@ func TestBridgeWaitUsesTaskSecretAndAttachmentIdentity(t *testing.T) {
 
 	var stdout bytes.Buffer
 	command := newBridgeCommandWithClient(&stdout, client)
-	command.SetArgs([]string{"wait", "--endpoint", "http://127.0.0.1/bridge", "--secret", "task-secret", "--attachment", "attachment-1"})
+	command.SetArgs([]string{"wait", "--descriptor", writeTestDescriptor(t)})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +66,7 @@ func TestBridgePublishForwardsNormalizedEventAsJSON(t *testing.T) {
 
 	command := newBridgeCommandWithClient(io.Discard, client)
 	command.SetIn(strings.NewReader(`{"id":"event-1","turn_id":"turn-1","sequence":1,"type":"progress"}`))
-	command.SetArgs([]string{"publish", "--endpoint", "http://127.0.0.1/bridge", "--secret", "task-secret"})
+	command.SetArgs([]string{"publish", "--descriptor", writeTestDescriptor(t)})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -82,13 +84,53 @@ func TestBridgeDecisionWaitsForOneProposalDecision(t *testing.T) {
 
 	var stdout bytes.Buffer
 	command := newBridgeCommandWithClient(&stdout, client)
-	command.SetArgs([]string{"decision", "--endpoint", "http://127.0.0.1/bridge", "--secret", "task-secret", "--action", "action-1"})
+	command.SetArgs([]string{"decision", "--descriptor", writeTestDescriptor(t), "--action", "action-1"})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
 	if gotActionID != "action-1" || !strings.Contains(stdout.String(), `"approved":true`) {
 		t.Fatalf("action ID = %q, output = %s", gotActionID, stdout.String())
 	}
+}
+
+func TestBridgeRejectsDescriptorReadableByOtherUsers(t *testing.T) {
+	path := writeTestDescriptor(t)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := newBridgeCommandWithClient(io.Discard, testHTTPClient(func(*http.Request) *http.Response {
+		t.Fatal("insecure descriptor must not be sent")
+		return nil
+	}))
+	command.SetArgs([]string{"wait", "--descriptor", path})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "owner-only") {
+		t.Fatalf("wait error = %v", err)
+	}
+}
+
+func TestBridgeRejectsDescriptorProtocolMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "descriptor.json")
+	if err := os.WriteFile(path, []byte(`{"version":"future","attachment_id":"attachment-1","endpoint":"http://127.0.0.1/bridge","task_secret":"task-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := newBridgeCommandWithClient(io.Discard, testHTTPClient(func(*http.Request) *http.Response {
+		t.Fatal("mismatched descriptor must not be sent")
+		return nil
+	}))
+	command.SetArgs([]string{"wait", "--descriptor", path})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "protocol") {
+		t.Fatalf("wait error = %v", err)
+	}
+}
+
+func writeTestDescriptor(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "descriptor.json")
+	data := `{"version":"v1","attachment_id":"attachment-1","endpoint":"http://127.0.0.1/bridge","task_secret":"task-secret"}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 type roundTripFunc func(*http.Request) *http.Response
