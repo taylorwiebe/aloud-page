@@ -219,11 +219,12 @@ li.sentence { display: list-item; }
 .source-section td, .source-section th { padding: 0.4rem; border: 1px solid var(--line); }
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.conversation { position: fixed; z-index: 20; right: 1.25rem; bottom: 1.25rem; width: min(31rem, calc(100vw - 2rem)); border: 1px solid var(--line); border-radius: 16px; background: var(--panel); box-shadow: 0 18px 60px rgb(28 37 32 / 20%); }
-.conversation-compact { width: min(25rem, calc(100vw - 2rem)); }
-.conversation-prompt { display: flex; justify-content: space-between; width: 100%; border: 0; border-radius: 16px; padding: 0.9rem 1rem; text-align: left; }
+.conversation { position: fixed; z-index: 20; right: 1.25rem; bottom: 1.25rem; width: min(31rem, calc(100vw - 2rem)); }
+.conversation-compact { width: auto; }
+.conversation-prompt { display: flex; justify-content: space-between; gap: 0.6rem; width: auto; border: 1px solid var(--line); border-radius: 999px; padding: 0.65rem 0.9rem; background: var(--panel); box-shadow: 0 8px 24px rgb(28 37 32 / 14%); text-align: left; }
+.selection-ask { position: fixed; z-index: 21; transform: translate(-50%, -100%); white-space: nowrap; box-shadow: 0 8px 24px rgb(28 37 32 / 18%); }
 .unread { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #b34334; }
-.conversation-panel { display: flex; max-height: min(38rem, calc(100vh - 2.5rem)); flex-direction: column; }
+.conversation-panel { display: flex; max-height: min(38rem, calc(100vh - 2.5rem)); flex-direction: column; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); box-shadow: 0 18px 60px rgb(28 37 32 / 20%); overflow: hidden; }
 .conversation-heading, .conversation-actions, .conversation-submit { display: flex; align-items: center; justify-content: space-between; gap: 0.55rem; }
 .conversation-heading { padding: 1rem; border-bottom: 1px solid var(--line); }
 .conversation-heading h2 { margin: 0.1rem 0 0; font-size: 1.1rem; }
@@ -241,10 +242,7 @@ li.sentence { display: list-item; }
 .selection-chip span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .selection-chip button { min-height: 2rem; padding: 0.1rem 0.5rem; background: transparent; }
 .role-note { color: var(--muted); font-size: 0.8rem; }
-.conversation-expanded { inset: 1rem; width: auto; }
-.conversation-expanded .conversation-panel { max-height: calc(100vh - 2rem); height: 100%; }
-.conversation-expanded .conversation-transcript { flex: 1; }
-.conversation-panel[hidden], .conversation-prompt[hidden], .selection-chip[hidden], .unread[hidden] { display: none; }
+.conversation-panel[hidden], .conversation-prompt[hidden], .selection-ask[hidden], .selection-chip[hidden], .unread[hidden] { display: none; }
 
 .recap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .recap-card { padding: 1rem; border-radius: 12px; background: #f2efe6; }
@@ -379,8 +377,8 @@ li.sentence { display: list-item; }
   .player-settings { justify-content: center; flex-wrap: wrap; }
   .status { text-align: center; }
   .recap-grid { grid-template-columns: 1fr; }
-  .conversation:not(.conversation-expanded) { bottom: 9rem; }
-  .conversation:not(.conversation-expanded) .conversation-panel { max-height: calc(100vh - 10rem); }
+  .conversation { bottom: 9rem; }
+  .conversation .conversation-panel { max-height: calc(100vh - 10rem); }
 
   .settings-heading {
     align-items: flex-start;

@@ -2,14 +2,14 @@
   "use strict";
   const $ = (selector) => document.querySelector(selector);
   const ui = { root: $("#conversation"), restore: $("#conversation-restore"), panel: $("#conversation-panel"),
-    close: $("#conversation-close"), expand: $("#conversation-expand"), unread: $("#conversation-unread"),
+    close: $("#conversation-close"), selectionAsk: $("#selection-ask"), unread: $("#conversation-unread"),
     transcript: $("#conversation-transcript"), form: $("#conversation-form"), input: $("#conversation-input"),
     send: $("#conversation-send"), status: $("#conversation-status"), role: $("#conversation-role"),
     chip: $("#selection-chip"), selectionLabel: $("#selection-label"), selectionText: $("#selection-text"),
     selectionRemove: $("#selection-remove"), alert: $("#conversation-alert") };
   let saved = {};
   try { saved = JSON.parse(sessionStorage.getItem("planreader-conversation") || "{}"); } catch (_) {}
-  const state = { mode: saved.mode || "compact", draft: saved.draft || "", selection: saved.selection || null,
+  const state = { mode: saved.mode === "open" ? "open" : "compact", draft: saved.draft || "", selection: saved.selection || null,
     events: saved.events || [], cursor: saved.cursor || 0, active: false, controller: true, document: null,
     followUpRequested: false };
   const controllerID = globalThis.PlanreaderBrowserID ||
@@ -42,10 +42,15 @@
     ui.panel.hidden = mode === "compact";
     ui.restore.hidden = mode !== "compact";
     ui.restore.setAttribute("aria-expanded", String(mode !== "compact"));
-    ui.expand.setAttribute("aria-pressed", String(mode === "expanded"));
-    ui.expand.textContent = mode === "expanded" ? "Reduce" : "Expand";
     if (mode !== "compact") ui.unread.hidden = true;
     persist();
+  }
+  function positionSelectionAction(range) {
+    const rect = range.getBoundingClientRect();
+    const left = Math.max(72, Math.min(window.innerWidth - 72, rect.left + rect.width / 2));
+    ui.selectionAsk.style.left = `${left}px`;
+    ui.selectionAsk.style.top = `${Math.max(48, rect.top - 8)}px`;
+    ui.selectionAsk.hidden = false;
   }
   function showSelection() {
     ui.chip.hidden = !state.selection;
@@ -175,8 +180,12 @@
   }
   async function captureSelection() {
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !selection.toString().trim()) return;
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+      ui.selectionAsk.hidden = true;
+      return;
+    }
     const range = selection.getRangeAt(0);
+    const selectionRange = range.cloneRange();
     const parent = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ?
       range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
     const friendlyBlock = parent?.closest("[data-block-index]");
@@ -199,7 +208,7 @@
       });
       if (!response.ok) throw new Error();
       state.selection = await response.json();
-      showSelection(); persist();
+      showSelection(); positionSelectionAction(selectionRange); persist();
     } catch (error) {
       if (error.name !== "AbortError") announce("That selection is stale or cannot be mapped. Select the passage again.", true);
     } finally {
@@ -218,11 +227,17 @@
     ui.role.textContent = "This tab controls the conversation";
     ui.restore.addEventListener("click", () => setMode("open"));
     ui.close.addEventListener("click", () => setMode("compact"));
-    ui.expand.addEventListener("click", () => setMode(state.mode === "expanded" ? "open" : "expanded"));
-    ui.selectionRemove.addEventListener("click", () => { state.selection = null; showSelection(); persist(); ui.input.focus(); });
+    ui.selectionAsk.addEventListener("pointerdown", (event) => event.preventDefault());
+    ui.selectionAsk.addEventListener("click", () => {
+      ui.selectionAsk.hidden = true;
+      setMode("open");
+      ui.input.focus();
+    });
+    ui.selectionRemove.addEventListener("click", () => { state.selection = null; ui.selectionAsk.hidden = true; showSelection(); persist(); ui.input.focus(); });
     ui.form.addEventListener("submit", submit);
     ui.input.addEventListener("input", persist);
     document.addEventListener("selectionchange", scheduleSelection);
+    window.addEventListener("scroll", () => { ui.selectionAsk.hidden = true; }, true);
     poll();
   }
   window.PlanreaderConversation = { start };

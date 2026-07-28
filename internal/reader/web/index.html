@@ -38,15 +38,15 @@
     </main>
 
     <section id="conversation" class="conversation conversation-compact" aria-label="Attached agent conversation" hidden>
+      <button id="selection-ask" class="selection-ask primary" type="button" hidden>Ask about this</button>
       <button id="conversation-restore" class="conversation-prompt" type="button" aria-expanded="false" aria-controls="conversation-panel">
-        <span>Ask the attached agent…</span>
+        <span>Ask</span>
         <span id="conversation-unread" class="unread" aria-label="Unread activity" hidden></span>
       </button>
       <div id="conversation-panel" class="conversation-panel" hidden>
         <header class="conversation-heading">
           <div><p class="eyebrow">Attached agent</p><h2>Talk about this plan</h2></div>
           <div class="conversation-actions">
-            <button id="conversation-expand" class="secondary" type="button" aria-pressed="false">Expand</button>
             <button id="conversation-close" class="secondary" type="button">Close</button>
           </div>
         </header>

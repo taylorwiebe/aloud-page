@@ -723,23 +723,32 @@ func TestAttachedConversationAssetsCoverDockAndSafeSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{`id="conversation-restore"`, `id="conversation-panel"`, `role="log"`, `id="selection-chip"`, `role="alert"`} {
+	for _, expected := range []string{`id="conversation-restore"`, `id="selection-ask"`, `id="conversation-panel"`, `role="log"`, `id="selection-chip"`, `role="alert"`} {
 		if !strings.Contains(string(markup), expected) {
 			t.Errorf("conversation markup missing %q", expected)
 		}
 	}
-	for _, expected := range []string{".conversation-compact", ".conversation-expanded", "@media"} {
+	if strings.Contains(string(markup), `id="conversation-expand"`) {
+		t.Error("conversation markup still exposes the deferred expanded state")
+	}
+	for _, expected := range []string{".conversation-compact", ".selection-ask", "@media"} {
 		if !strings.Contains(string(styles), expected) {
 			t.Errorf("conversation styles missing %q", expected)
 		}
 	}
+	if strings.Contains(string(styles), ".conversation-expanded") {
+		t.Error("conversation styles still include the deferred expanded state")
+	}
 	for _, expected := range []string{"sessionStorage", "selectionchange", `representation === "original"`,
 		"observer-only", "Approval required", "Provider authorization", "Reconnecting", "textContent",
 		"source_diff", "friendly_effect", "authorization_denied", "controller_id: controllerID",
-		"proposalNode.dataset.deciding"} {
+		"proposalNode.dataset.deciding", "positionSelectionAction", `setMode("open")`} {
 		if !strings.Contains(string(conversation), expected) {
 			t.Errorf("conversation behavior missing %q", expected)
 		}
+	}
+	if strings.Contains(string(conversation), `"expanded"`) {
+		t.Error("conversation behavior still includes the deferred expanded state")
 	}
 	if !strings.Contains(string(reader), "globalThis.PlanreaderBrowserID") ||
 		!strings.Contains(string(conversation), "globalThis.PlanreaderBrowserID") {
