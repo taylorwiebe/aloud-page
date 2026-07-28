@@ -125,6 +125,40 @@ func TestReadPreparedDocumentReusesCompleteReaderData(t *testing.T) {
 	if got.FileName != want.FileName || got.Narration.Title != want.Narration.Title || len(got.Sources) != 1 {
 		t.Fatalf("readPreparedDocument() = %#v", got)
 	}
+	if got.CanEdit {
+		t.Fatal("prepared reader claims edit capability without verified source identity")
+	}
+}
+
+func TestReaderDocumentPayloadOmitsPrivateDocumentState(t *testing.T) {
+	raw := []byte("# Hidden\n\nserver-only-marker\n")
+	sections := narration.SplitMarkdownSections(string(raw))
+	state, err := reader.NewDocumentState("/private/work/plan.md", raw, sections, narration.Narration{
+		Title: "Plan",
+		Sections: []narration.NarrationSection{{
+			ID: "intro", Heading: "Intro", SourceSectionIDs: []string{"source-0"}, Sentences: []string{"Readable."},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := reader.ReaderDocument{
+		FileName: "plan.md",
+		Narration: narration.Narration{Title: "Plan", Sections: []narration.NarrationSection{{
+			ID: "intro", Heading: "Intro", SourceSectionIDs: []string{"source-0"}, Sentences: []string{"Readable."},
+		}}},
+		Sources: []reader.RenderedSourceSection{{ID: "source-0", HTML: "<p>secret source text</p>"}},
+		State:   state,
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"/private/work/plan.md", "server-only-marker", "task-secret", "canonical_path", "raw_source", "content_digest"} {
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("browser payload leaked %q: %s", secret, data)
+		}
+	}
 }
 
 func TestReadPreparedDocumentRejectsIncompleteData(t *testing.T) {

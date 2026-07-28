@@ -144,6 +144,10 @@ func runReader(config options, args []string, stdout, stderr io.Writer) error {
 	if strings.TrimSpace(string(markdown)) == "" {
 		return errors.New("document is empty")
 	}
+	canonicalPath, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return fmt.Errorf("resolving canonical document path: %w", err)
+	}
 
 	providerCommand := config.claudeCommand
 	if config.provider == "codex" {
@@ -190,6 +194,16 @@ func runReader(config options, args []string, stdout, stderr io.Writer) error {
 		Narration: generated,
 		Sources:   renderedSources,
 	}
+	document.State, err = reader.NewDocumentState(canonicalPath, markdown, sources, generated)
+	if err != nil {
+		return fmt.Errorf("preparing authoritative document state: %w", err)
+	}
+	if err := document.State.VerifyCurrentSource(); err != nil {
+		return fmt.Errorf("verifying authoritative document state: %w", err)
+	}
+	document.DocumentRevision = document.State.Revision()
+	document.FriendlyRevision = document.State.FriendlyRevision()
+	document.CanEdit = config.agentManaged
 	return serveReader(document, config.noOpen, config.agentManaged, stdout, stderr)
 }
 
@@ -206,6 +220,12 @@ func readPreparedDocument(path string) (reader.ReaderDocument, error) {
 	if strings.TrimSpace(document.FileName) == "" || strings.TrimSpace(document.Narration.Title) == "" || len(document.Narration.Sections) == 0 || len(document.Sources) == 0 {
 		return document, errors.New("prepared reader data is incomplete")
 	}
+	// Prepared payloads contain presentation data only. They remain readable, but
+	// cannot claim edit capability without a separately verified source identity.
+	document.State = nil
+	document.DocumentRevision = ""
+	document.FriendlyRevision = ""
+	document.CanEdit = false
 	return document, nil
 }
 

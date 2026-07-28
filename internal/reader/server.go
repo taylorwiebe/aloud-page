@@ -27,10 +27,14 @@ import (
 var webFiles embed.FS
 
 type ReaderDocument struct {
-	FileName     string                  `json:"file_name"`
-	Narration    narration.Narration     `json:"narration"`
-	Sources      []RenderedSourceSection `json:"sources"`
-	AgentManaged bool                    `json:"agent_managed,omitempty"`
+	FileName         string                  `json:"file_name"`
+	Narration        narration.Narration     `json:"narration"`
+	Sources          []RenderedSourceSection `json:"sources"`
+	DocumentRevision string                  `json:"document_revision,omitempty"`
+	FriendlyRevision string                  `json:"friendly_revision,omitempty"`
+	CanEdit          bool                    `json:"can_edit"`
+	AgentManaged     bool                    `json:"agent_managed,omitempty"`
+	State            *DocumentState          `json:"-"`
 }
 
 type RenderedSourceSection struct {
@@ -52,7 +56,7 @@ func RenderSourceSections(sections []narration.SourceSection) ([]RenderedSourceS
 			ID:      section.ID,
 			Heading: section.Heading,
 			Level:   section.Level,
-			HTML:    output.String(),
+			HTML:    fmt.Sprintf(`<div data-source-anchor="%s">%s</div>`, section.ID, output.String()),
 		})
 	}
 	return rendered, nil

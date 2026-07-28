@@ -51,3 +51,33 @@ func TestSplitMarkdownOmitsYAMLFrontMatter(t *testing.T) {
 		t.Fatalf("section contains frontmatter: %q", got[0].Markdown)
 	}
 }
+
+func TestSplitMarkdownSectionsRetainsExactSourceRanges(t *testing.T) {
+	input := "---\ntitle: Plan\n---\n\n# One\n\nCafé.\n\n## Two\n\n```markdown\n# Still code\n```\n"
+	got := splitMarkdownSections(input)
+	if len(got) != 2 {
+		t.Fatalf("len(splitMarkdownSections()) = %d, want 2", len(got))
+	}
+	for _, section := range got {
+		if section.StartByte < 0 || section.EndByte <= section.StartByte {
+			t.Fatalf("invalid range for %#v", section)
+		}
+		if input[section.StartByte:section.EndByte] != section.Markdown {
+			t.Fatalf("section %q range = %q, markdown = %q", section.ID, input[section.StartByte:section.EndByte], section.Markdown)
+		}
+	}
+	if got[0].StartLine != 5 || got[0].EndLine != 7 {
+		t.Fatalf("first section lines = %d-%d, want 5-7", got[0].StartLine, got[0].EndLine)
+	}
+	if got[1].StartLine != 9 || got[1].EndLine != 13 {
+		t.Fatalf("second section lines = %d-%d, want 9-13", got[1].StartLine, got[1].EndLine)
+	}
+}
+
+func TestSplitMarkdownDuplicateHeadingsHaveDistinctRanges(t *testing.T) {
+	input := "# Same\n\nFirst.\n\n# Same\n\nSecond.\n"
+	got := splitMarkdownSections(input)
+	if len(got) != 2 || got[0].ID == got[1].ID || got[0].StartByte == got[1].StartByte {
+		t.Fatalf("duplicate heading sections are not distinct: %#v", got)
+	}
+}
