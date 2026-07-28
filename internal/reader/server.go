@@ -18,6 +18,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 
+	"github.com/taylorwiebe/planreader/internal/agentbridge"
 	"github.com/taylorwiebe/planreader/internal/narration"
 	"github.com/taylorwiebe/planreader/internal/speech"
 )
@@ -66,6 +67,10 @@ func newReaderHandlerWithSpeech(document ReaderDocument, token string, speechSer
 }
 
 func newReaderHandlerWithSpeechAndLifecycle(document ReaderDocument, token string, speechService *speech.Service, lifecycle *agentLifecycle) http.Handler {
+	return newReaderHandlerWithBridge(document, token, speechService, lifecycle, nil)
+}
+
+func newReaderHandlerWithBridge(document ReaderDocument, token string, speechService *speech.Service, lifecycle *agentLifecycle, bridge http.Handler) http.Handler {
 	prefix := "/reader/" + token + "/"
 	document.AgentManaged = lifecycle != nil
 	data, err := json.Marshal(document)
@@ -90,6 +95,11 @@ func newReaderHandlerWithSpeechAndLifecycle(document ReaderDocument, token strin
 
 		if lifecycle != nil && strings.HasPrefix(asset, "api/agent/") {
 			lifecycle.ServeHTTP(w, r, strings.TrimPrefix(asset, "api/"))
+			return
+		}
+		if bridge != nil && strings.HasPrefix(asset, "api/conversation/") {
+			r.URL.Path = "/" + strings.TrimPrefix(asset, "api/conversation/")
+			bridge.ServeHTTP(w, r)
 			return
 		}
 		if speechService != nil && strings.HasPrefix(asset, "api/") {
@@ -125,28 +135,58 @@ func newReaderHandlerWithSpeechAndLifecycle(document ReaderDocument, token strin
 }
 
 func StartServer(document ReaderDocument, shutdownRequested func()) (string, *http.Server, error) {
+	url, _, server, err := startServer(document, shutdownRequested)
+	return url, server, err
+}
+
+func StartAttachedServer(document ReaderDocument, shutdownRequested func()) (string, agentbridge.Descriptor, *http.Server, error) {
+	return startServer(document, shutdownRequested)
+}
+
+func startServer(document ReaderDocument, shutdownRequested func()) (string, agentbridge.Descriptor, *http.Server, error) {
+	var descriptor agentbridge.Descriptor
 	speechService, err := speech.NewService()
 	if err != nil {
-		return "", nil, err
+		return "", descriptor, nil, err
 	}
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		speechService.Close()
-		return "", nil, fmt.Errorf("creating local access token: %w", err)
+		return "", descriptor, nil, fmt.Errorf("creating local access token: %w", err)
 	}
 	token := hex.EncodeToString(tokenBytes)
 
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		speechService.Close()
-		return "", nil, fmt.Errorf("starting local reader: %w", err)
+		return "", descriptor, nil, fmt.Errorf("starting local reader: %w", err)
 	}
 	var lifecycle *agentLifecycle
+	var bridge http.Handler
 	if shutdownRequested != nil {
 		lifecycle = newAgentLifecycle(shutdownRequested, 2*time.Minute, 12*time.Hour)
+		attachmentBytes := make([]byte, 24)
+		taskSecretBytes := make([]byte, 32)
+		if _, err := rand.Read(attachmentBytes); err != nil {
+			listener.Close()
+			speechService.Close()
+			return "", descriptor, nil, fmt.Errorf("creating attachment identity: %w", err)
+		}
+		if _, err := rand.Read(taskSecretBytes); err != nil {
+			listener.Close()
+			speechService.Close()
+			return "", descriptor, nil, fmt.Errorf("creating task secret: %w", err)
+		}
+		descriptor = agentbridge.Descriptor{
+			Version:      agentbridge.ProtocolVersion,
+			AttachmentID: hex.EncodeToString(attachmentBytes),
+			TaskSecret:   hex.EncodeToString(taskSecretBytes),
+		}
+		broker := agentbridge.NewBroker(descriptor.AttachmentID, descriptor.TaskSecret)
+		bridge = agentbridge.NewHTTPHandler(broker, "")
 	}
 	server := &http.Server{
-		Handler:           newReaderHandlerWithSpeechAndLifecycle(document, token, speechService, lifecycle),
+		Handler:           newReaderHandlerWithBridge(document, token, speechService, lifecycle, bridge),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -158,7 +198,8 @@ func StartServer(document ReaderDocument, shutdownRequested func()) (string, *ht
 	}()
 
 	url := fmt.Sprintf("http://%s/reader/%s/", listener.Addr().String(), token)
-	return url, server, nil
+	descriptor.Endpoint = strings.TrimRight(url, "/") + "/api/conversation"
+	return url, descriptor, server, nil
 }
 
 func OpenBrowser(url string) error {

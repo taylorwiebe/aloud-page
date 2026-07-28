@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/taylorwiebe/planreader/internal/agentbridge"
 	"github.com/taylorwiebe/planreader/internal/narration"
 	"github.com/taylorwiebe/planreader/internal/reader"
 )
@@ -216,7 +218,15 @@ func serveReader(document reader.ReaderDocument, noOpen, agentManaged bool, stdo
 	if agentManaged {
 		shutdownRequested = func() { shutdownOnce.Do(func() { close(agentShutdown) }) }
 	}
-	url, server, err := reader.StartServer(document, shutdownRequested)
+	var url string
+	var server *http.Server
+	var descriptor agentbridge.Descriptor
+	var err error
+	if agentManaged {
+		url, descriptor, server, err = reader.StartAttachedServer(document, shutdownRequested)
+	} else {
+		url, server, err = reader.StartServer(document, shutdownRequested)
+	}
 	if err != nil {
 		return err
 	}
@@ -226,6 +236,11 @@ func serveReader(document reader.ReaderDocument, noOpen, agentManaged bool, stdo
 		_ = server.Shutdown(shutdownCtx)
 	}()
 	if agentManaged {
+		encodedDescriptor, encodeErr := json.Marshal(descriptor)
+		if encodeErr != nil {
+			return fmt.Errorf("encoding bridge descriptor: %w", encodeErr)
+		}
+		fmt.Fprintf(stdout, "Agent bridge: %s\n", encodedDescriptor)
 		cleanup, err := claimAgentReader(url)
 		if err != nil {
 			fmt.Fprintf(stderr, "Could not register agent-managed cleanup: %v\n", err)

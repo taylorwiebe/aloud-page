@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/taylorwiebe/planreader/internal/agentbridge"
 	"github.com/taylorwiebe/planreader/internal/narration"
 )
 
@@ -508,6 +509,31 @@ func TestAgentLifecycleShutdownRequiresPost(t *testing.T) {
 	case <-shutdown:
 	case <-time.After(time.Second):
 		t.Fatal("shutdown callback was not called")
+	}
+}
+
+func TestReaderRoutesConversationWithoutExposingTaskSecret(t *testing.T) {
+	broker := agentbridge.NewBroker("attachment-1", "task-secret")
+	handler := newReaderHandlerWithBridge(ReaderDocument{
+		FileName: "plan.md", Narration: narration.Narration{Title: "Plan"},
+	}, "browser-token", nil, nil, agentbridge.NewHTTPHandler(broker, ""))
+
+	turn := `{"id":"turn-1","controller_id":"controller-1","text":"question"}`
+	request := httptest.NewRequest(http.MethodPost, "/reader/browser-token/api/conversation/browser/turns", strings.NewReader(turn))
+	request.Header.Set("Origin", "http://example.com")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("browser turn status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	taskRequest := httptest.NewRequest(http.MethodGet, "/reader/browser-token/api/conversation/task/turns/wait?attachment_id=attachment-1", nil)
+	taskRequest.Header.Set("X-Planreader-Task-Secret", "browser-token")
+	taskResponse := httptest.NewRecorder()
+	handler.ServeHTTP(taskResponse, taskRequest)
+	if taskResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("browser token reached task mailbox: %d", taskResponse.Code)
 	}
 }
 

@@ -3,6 +3,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/taylorwiebe/planreader/internal/agentbridge"
@@ -25,6 +28,85 @@ func TestBridgeProbeReportsCurrentCodexTask(t *testing.T) {
 	}
 	if !result.Supported || result.TaskID != "thread-123" {
 		t.Fatalf("probe result = %#v", result)
+	}
+}
+
+func TestBridgeWaitUsesTaskSecretAndAttachmentIdentity(t *testing.T) {
+	var gotSecret, gotAttachment string
+	client := testHTTPClient(func(r *http.Request) *http.Response {
+		gotSecret = r.Header.Get("X-Planreader-Task-Secret")
+		gotAttachment = r.URL.Query().Get("attachment_id")
+		return bridgeResponse(http.StatusOK, `{"id":"turn-1"}`)
+	})
+
+	var stdout bytes.Buffer
+	command := newBridgeCommandWithClient(&stdout, client)
+	command.SetArgs([]string{"wait", "--endpoint", "http://127.0.0.1/bridge", "--secret", "task-secret", "--attachment", "attachment-1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotSecret != "task-secret" || gotAttachment != "attachment-1" {
+		t.Fatalf("secret = %q, attachment = %q", gotSecret, gotAttachment)
+	}
+}
+
+func TestBridgePublishForwardsNormalizedEventAsJSON(t *testing.T) {
+	var gotType, gotSecret string
+	client := testHTTPClient(func(r *http.Request) *http.Response {
+		gotSecret = r.Header.Get("X-Planreader-Task-Secret")
+		var event agentbridge.Event
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		gotType = string(event.Type)
+		return bridgeResponse(http.StatusCreated, "")
+	})
+
+	command := newBridgeCommandWithClient(io.Discard, client)
+	command.SetIn(strings.NewReader(`{"id":"event-1","turn_id":"turn-1","sequence":1,"type":"progress"}`))
+	command.SetArgs([]string{"publish", "--endpoint", "http://127.0.0.1/bridge", "--secret", "task-secret"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotSecret != "task-secret" || gotType != "progress" {
+		t.Fatalf("secret = %q, type = %q", gotSecret, gotType)
+	}
+}
+
+func TestBridgeDecisionWaitsForOneProposalDecision(t *testing.T) {
+	var gotActionID string
+	client := testHTTPClient(func(r *http.Request) *http.Response {
+		gotActionID = r.URL.Query().Get("action_id")
+		return bridgeResponse(http.StatusOK, `{"id":"decision-1","action_id":"action-1","approved":true}`)
+	})
+
+	var stdout bytes.Buffer
+	command := newBridgeCommandWithClient(&stdout, client)
+	command.SetArgs([]string{"decision", "--endpoint", "http://127.0.0.1/bridge", "--secret", "task-secret", "--action", "action-1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if gotActionID != "action-1" || !strings.Contains(stdout.String(), `"approved":true`) {
+		t.Fatalf("action ID = %q, output = %s", gotActionID, stdout.String())
+	}
+}
+
+type roundTripFunc func(*http.Request) *http.Response
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request), nil
+}
+
+func testHTTPClient(roundTrip roundTripFunc) *http.Client {
+	return &http.Client{Transport: roundTrip}
+}
+
+func bridgeResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
 	}
 }
 
