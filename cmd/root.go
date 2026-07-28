@@ -88,7 +88,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags.BoolVar(&config.noOpen, "no-open", false, "print the reader URL without opening a browser")
 	flags.StringVar(&config.prepared, "prepared", "", "reuse a previously prepared Planreader data.json without calling an AI provider")
 	flags.BoolVar(&config.agentManaged, "agent-managed", false, "replace older agent readers and stop when the browser is gone")
-	command.AddCommand(newVersionCommand(stdout), newInstallCommand(stdout), newUpdateCommand(stdout))
+	command.AddCommand(newVersionCommand(stdout), newInstallCommand(stdout), newUpdateCommand(stdout), newBridgeCommand(stdout))
 	return command
 }
 

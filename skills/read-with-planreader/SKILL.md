@@ -31,6 +31,21 @@ Use Planreader as the single source of truth for preparing the human-readable na
 5. Keep the process handle returned by the command. Wait for `Reader ready:` and open or navigate to that URL when the environment permits it. If Planreader already opened the browser, do not open a duplicate tab. Agent-managed mode replaces an older agent-launched reader and stops automatically after its browser tab disappears.
 6. Tell the user that the reader is ready and which provider was used. Do not dump generation logs or narration into chat.
 
+## Attach this task
+
+- After the reader reports that its conversation bridge is ready, run
+  `planreader bridge probe --provider PROVIDER`.
+- Continue only when the result says the current task is supported. Never
+  resume, fork, or start another provider session as a fallback.
+- Keep this exact task inside the bridge loop: wait for a reader turn, handle it
+  with the task's existing conversation, working directory, instructions,
+  tools, and native authorization, then publish normalized progress and answer
+  events through Planreader.
+- A Planreader approval records the reader's intent for one proposal. It never
+  replaces or bypasses Claude or Codex permission prompts.
+- Stop the bridge loop when the reader closes, disconnects, or asks to cancel.
+  Reconnect only with the same attachment identity.
+
 ## Own the reader process
 
 - Never launch Planreader in the background without retaining its process or session handle.

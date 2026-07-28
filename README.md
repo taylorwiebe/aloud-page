@@ -82,6 +82,20 @@ Voice packs are pinned, integrity-checked downloads from Hugging Face and use th
 
 The exact model route and retention guarantees still depend on your organization's Claude Code or Codex configuration and policies.
 
+## Attached-agent support
+
+Planreader is adding conversations that remain owned by the exact agent task
+that opened the reader. The task polls Planreader directly; Planreader does not
+resume or launch a replacement session.
+
+| Provider | Status | Evidence required |
+|---|---|---|
+| Codex | Capability gate available | Current `CODEX_THREAD_ID`, original workspace and tools, streamed bridge events, native authorization, cancellation, and same-identity reconnect |
+| Claude Code | Not yet supported | A verified current-session identity plus the same end-to-end gates as Codex |
+
+An installed provider or a resumable session is not sufficient evidence. A
+provider is enabled only while its current task passes every gate.
+
 ## Development
 
 ```bash
