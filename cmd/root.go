@@ -201,14 +201,7 @@ func runReader(config options, args []string, stdout, stderr io.Writer) error {
 	if err := document.State.VerifyCurrentSource(); err != nil {
 		return fmt.Errorf("verifying authoritative document state: %w", err)
 	}
-	document.DocumentRevision = document.State.Revision()
-	document.FriendlyRevision = document.State.FriendlyRevision()
 	document.CanEdit = config.agentManaged
-	document.Regenerate = func(regenerationContext context.Context, markdown string, sections []narration.SourceSection) (narration.Narration, error) {
-		return runner.Generate(regenerationContext, markdown, narration.ReaderOptions{
-			Depth: depthPrompt, Audience: config.audience, Sections: sections,
-		})
-	}
 	return serveReader(document, config.noOpen, config.agentManaged, stdout, stderr)
 }
 

@@ -12,6 +12,8 @@
   const state = { mode: saved.mode || "compact", draft: saved.draft || "", selection: saved.selection || null,
     events: saved.events || [], cursor: saved.cursor || 0, active: false, controller: true, document: null };
   const controllerID = sessionStorage.getItem("planreader-controller") || (crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+  let selectionTimer;
+  let selectionRequest;
   sessionStorage.setItem("planreader-controller", controllerID);
 
   function persist() {
@@ -111,11 +113,15 @@
     try {
       const response = await fetch(`api/conversation/browser/events?after=${state.cursor}`, { cache: "no-store" });
       if (!response.ok) throw new Error();
+      let changed = false;
       for (const event of await response.json()) {
-        state.cursor = Math.max(state.cursor, event.sequence || 0);
-        if (!state.events.some((known) => known.id === event.id)) { state.events.push(event); renderEvent(event); }
+        const cursor = Math.max(state.cursor, event.sequence || 0);
+        if (cursor !== state.cursor) { state.cursor = cursor; changed = true; }
+        if (!state.events.some((known) => known.id === event.id)) {
+          state.events.push(event); renderEvent(event); changed = true;
+        }
       }
-      persist();
+      if (changed) persist();
     } catch (_) { announce("Connection lost. Reconnecting while preserving this conversation.", true); }
     window.setTimeout(poll, 1000);
   }
@@ -141,14 +147,26 @@
       start_offset: offsetWithin(root, range.startContainer, range.startOffset),
       end_offset: offsetWithin(root, range.endContainer, range.endOffset),
       revision: friendly ? state.document.friendly_revision : state.document.document_revision };
+    const controller = new AbortController();
+    selectionRequest = controller;
     try {
       const response = await fetch("api/conversation/browser/selection", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request),
+        signal: controller.signal,
       });
       if (!response.ok) throw new Error();
       state.selection = await response.json();
       showSelection(); persist();
-    } catch (_) { announce("That selection is stale or cannot be mapped. Select the passage again.", true); }
+    } catch (error) {
+      if (error.name !== "AbortError") announce("That selection is stale or cannot be mapped. Select the passage again.", true);
+    } finally {
+      if (selectionRequest === controller) selectionRequest = null;
+    }
+  }
+  function scheduleSelection() {
+    window.clearTimeout(selectionTimer);
+    selectionRequest?.abort();
+    selectionTimer = window.setTimeout(captureSelection, 0);
   }
   function start(documentData) {
     if (!documentData.agent_managed) return;
@@ -161,7 +179,7 @@
     ui.selectionRemove.addEventListener("click", () => { state.selection = null; showSelection(); persist(); ui.input.focus(); });
     ui.form.addEventListener("submit", submit);
     ui.input.addEventListener("input", persist);
-    document.addEventListener("selectionchange", () => window.setTimeout(captureSelection, 0));
+    document.addEventListener("selectionchange", scheduleSelection);
     poll();
   }
   window.PlanreaderConversation = { start };

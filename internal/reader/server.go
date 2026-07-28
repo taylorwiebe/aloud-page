@@ -36,7 +36,6 @@ type ReaderDocument struct {
 	CanEdit          bool                    `json:"can_edit"`
 	AgentManaged     bool                    `json:"agent_managed,omitempty"`
 	State            *DocumentState          `json:"-"`
-	Regenerate       RegenerateNarration     `json:"-"`
 }
 
 type RenderedSourceSection struct {
