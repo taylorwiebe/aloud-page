@@ -37,6 +37,34 @@
       </aside>
     </main>
 
+    <section id="conversation" class="conversation conversation-compact" aria-label="Attached agent conversation" hidden>
+      <button id="conversation-restore" class="conversation-prompt" type="button" aria-expanded="false" aria-controls="conversation-panel">
+        <span>Ask the attached agent…</span>
+        <span id="conversation-unread" class="unread" aria-label="Unread activity" hidden></span>
+      </button>
+      <div id="conversation-panel" class="conversation-panel" hidden>
+        <header class="conversation-heading">
+          <div><p class="eyebrow">Attached agent</p><h2>Talk about this plan</h2></div>
+          <div class="conversation-actions">
+            <button id="conversation-expand" class="secondary" type="button" aria-pressed="false">Expand</button>
+            <button id="conversation-close" class="secondary" type="button">Close</button>
+          </div>
+        </header>
+        <div id="conversation-status" class="conversation-status" role="status" aria-live="polite">Connected</div>
+        <div id="conversation-transcript" class="conversation-transcript" role="log" aria-live="polite" aria-relevant="additions text"></div>
+        <form id="conversation-form" class="conversation-form">
+          <div id="selection-chip" class="selection-chip" hidden>
+            <span id="selection-label"></span><span id="selection-text"></span>
+            <button id="selection-remove" type="button" aria-label="Remove selected passage">×</button>
+          </div>
+          <label class="sr-only" for="conversation-input">Message the attached agent</label>
+          <textarea id="conversation-input" rows="2" placeholder="Ask about the plan"></textarea>
+          <div class="conversation-submit"><span id="conversation-role" class="role-note"></span><button id="conversation-send" class="primary" type="submit">Send</button></div>
+        </form>
+      </div>
+      <div id="conversation-alert" class="sr-only" role="alert" aria-live="assertive"></div>
+    </section>
+
     <dialog id="settings-dialog" class="settings-dialog">
       <form method="dialog" class="settings-heading">
         <div>
@@ -87,6 +115,7 @@
       </div>
     </footer>
 
+    <script src="conversation.js"></script>
     <script src="reader.js"></script>
   </body>
 </html>

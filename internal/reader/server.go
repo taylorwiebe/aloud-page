@@ -102,6 +102,10 @@ func newReaderHandlerWithBridge(document ReaderDocument, token string, speechSer
 			return
 		}
 		if bridge != nil && strings.HasPrefix(asset, "api/conversation/") {
+			if asset == "api/conversation/browser/selection" {
+				resolveBrowserSelection(w, r, document.State)
+				return
+			}
 			r.URL.Path = "/" + strings.TrimPrefix(asset, "api/conversation/")
 			bridge.ServeHTTP(w, r)
 			return
@@ -136,6 +140,67 @@ func newReaderHandlerWithBridge(document ReaderDocument, token string, speechSer
 		}
 		_, _ = w.Write(content)
 	})
+}
+
+func resolveBrowserSelection(w http.ResponseWriter, r *http.Request, state *DocumentState) {
+	if r.Method != http.MethodPost || state == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "invalid origin", http.StatusForbidden)
+		return
+	}
+	var request struct {
+		Representation string `json:"representation"`
+		Revision       string `json:"revision"`
+		SectionID      string `json:"section_id"`
+		BlockIndex     int    `json:"block_index"`
+		Quote          string `json:"quote"`
+		StartOffset    int    `json:"start_offset"`
+		EndOffset      int    `json:"end_offset"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSelectionBytes))
+	decoder.DisallowUnknownFields()
+	if r.Header.Get("Content-Type") != "application/json" || decoder.Decode(&request) != nil {
+		http.Error(w, "invalid selection", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	switch request.Representation {
+	case "original":
+		resolved, err := state.LocateOriginalSelection(request.Revision, request.SectionID, request.Quote)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(agentbridge.Selection{
+			Text: resolved.Quote, Representation: resolved.Representation, SectionID: resolved.SectionID,
+			Start: resolved.StartByte, End: resolved.EndByte, Revision: resolved.Revision,
+		})
+	case "friendly":
+		var resolved ResolvedFriendlySelection
+		var err error
+		if request.BlockIndex < 0 {
+			resolved, err = state.LocateFriendlySelection(request.Revision, request.SectionID, request.Quote)
+		} else {
+			resolved, err = state.ResolveFriendlySelection(FriendlySelectionRequest{
+				Revision: request.Revision, SectionID: request.SectionID, BlockIndex: request.BlockIndex,
+				Quote: request.Quote, StartOffset: request.StartOffset, EndOffset: request.EndOffset,
+			})
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(agentbridge.Selection{
+			Text: resolved.Quote, Representation: resolved.Representation, SectionID: resolved.SectionID,
+			BlockIndex: resolved.BlockIndex, Start: request.StartOffset, End: request.EndOffset,
+			Revision: resolved.Revision, CandidateSourceSectionIDs: resolved.CandidateSourceSectionIDs,
+		})
+	default:
+		http.Error(w, "invalid selection", http.StatusBadRequest)
+	}
 }
 
 func StartServer(document ReaderDocument, shutdownRequested func()) (string, *http.Server, error) {

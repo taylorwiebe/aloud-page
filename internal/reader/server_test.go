@@ -596,3 +596,75 @@ func TestRenderSourceSectionsRendersTables(t *testing.T) {
 		t.Fatalf("rendered HTML does not contain a table: %s", sections[0].HTML)
 	}
 }
+
+func TestAttachedConversationAssetsCoverDockAndSafeSelection(t *testing.T) {
+	markup, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := fs.ReadFile(webFiles, "web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := fs.ReadFile(webFiles, "web/conversation.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := fs.ReadFile(webFiles, "web/reader.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`id="conversation-restore"`, `id="conversation-panel"`, `role="log"`, `id="selection-chip"`, `role="alert"`} {
+		if !strings.Contains(string(markup), expected) {
+			t.Errorf("conversation markup missing %q", expected)
+		}
+	}
+	for _, expected := range []string{".conversation-compact", ".conversation-expanded", "@media"} {
+		if !strings.Contains(string(styles), expected) {
+			t.Errorf("conversation styles missing %q", expected)
+		}
+	}
+	for _, expected := range []string{"sessionStorage", "selectionchange", `representation === "original"`,
+		"observer-only", "Approval required", "Provider authorization", "Reconnecting", "textContent"} {
+		if !strings.Contains(string(conversation), expected) {
+			t.Errorf("conversation behavior missing %q", expected)
+		}
+	}
+	if !strings.Contains(string(reader), `speechPointerDragged || (selection && !selection.isCollapsed)`) {
+		t.Fatal("pointer text selection can still trigger speech")
+	}
+	for _, expected := range []string{"pendingPointerPlayback", `event.detail > 1`, `node.addEventListener("dblclick"`} {
+		if !strings.Contains(string(reader), expected) {
+			t.Fatalf("double-click text selection can still trigger speech; missing %q", expected)
+		}
+	}
+}
+
+func TestReaderResolvesSelectionsWithoutExposingSource(t *testing.T) {
+	source := "# One\n\nAuthoritative passage.\n"
+	sections := narration.SplitMarkdownSections(source)
+	friendly := narration.Narration{Title: "Friendly", Sections: []narration.NarrationSection{{
+		ID: "friendly-1", Heading: "One", Sentences: []string{"Clear explanation."},
+		SourceSectionIDs: []string{sections[0].ID},
+	}}}
+	state := testDocumentState(t, source, friendly)
+	broker := agentbridge.NewBroker("attachment-1", "task-secret")
+	handler := newReaderHandlerWithBridge(ReaderDocument{State: state}, "browser-token", nil, nil, agentbridge.NewHTTPHandler(broker, ""))
+
+	for _, body := range []string{
+		`{"representation":"original","revision":"` + state.Revision() + `","section_id":"` + sections[0].ID + `","block_index":0,"quote":"Authoritative passage.","start_offset":0,"end_offset":22}`,
+		`{"representation":"friendly","revision":"` + state.FriendlyRevision() + `","section_id":"friendly-1","block_index":0,"quote":"Clear explanation.","start_offset":0,"end_offset":18}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/reader/browser-token/api/conversation/browser/selection", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", "http://example.com")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("selection status = %d, body = %s", response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), source) {
+			t.Fatal("selection response exposed the authoritative document")
+		}
+	}
+}

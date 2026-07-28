@@ -176,6 +176,23 @@ func (s *DocumentState) ResolveOriginalSelection(request OriginalSelectionReques
 	}, nil
 }
 
+func (s *DocumentState) LocateOriginalSelection(revision, sectionID, quote string) (ResolvedOriginalSelection, error) {
+	s.mu.RLock()
+	section, ok := s.sections[sectionID]
+	s.mu.RUnlock()
+	if !ok || strings.TrimSpace(quote) == "" {
+		return ResolvedOriginalSelection{}, ErrInvalidSelection
+	}
+	start := strings.Index(section.Markdown, quote)
+	if start < 0 || strings.Index(section.Markdown[start+len(quote):], quote) >= 0 {
+		return ResolvedOriginalSelection{}, ErrAmbiguousSelection
+	}
+	return s.ResolveOriginalSelection(OriginalSelectionRequest{
+		Revision: revision, SectionID: sectionID, Quote: quote,
+		StartOffset: start, EndOffset: start + len(quote),
+	})
+}
+
 func (s *DocumentState) ResolveFriendlySelection(request FriendlySelectionRequest) (ResolvedFriendlySelection, error) {
 	if err := s.VerifyCurrentSource(); err != nil {
 		return ResolvedFriendlySelection{}, err
@@ -208,6 +225,38 @@ func (s *DocumentState) ResolveFriendlySelection(request FriendlySelectionReques
 			SectionID:                 section.ID,
 			BlockIndex:                request.BlockIndex,
 			Quote:                     request.Quote,
+			CandidateSourceSectionIDs: append([]string(nil), section.SourceSectionIDs...),
+		}, nil
+	}
+	return ResolvedFriendlySelection{}, ErrInvalidSelection
+}
+
+func (s *DocumentState) LocateFriendlySelection(revision, sectionID, quote string) (ResolvedFriendlySelection, error) {
+	if err := s.VerifyCurrentSource(); err != nil {
+		return ResolvedFriendlySelection{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if revision != s.friendlyRevision || strings.TrimSpace(quote) == "" {
+		return ResolvedFriendlySelection{}, ErrStaleRevision
+	}
+	for _, section := range s.narration.Sections {
+		if section.ID != sectionID {
+			continue
+		}
+		matches := 0
+		for _, text := range append([]string{section.Heading}, section.Sentences...) {
+			matches += strings.Count(text, quote)
+		}
+		if matches != 1 {
+			return ResolvedFriendlySelection{}, ErrAmbiguousSelection
+		}
+		return ResolvedFriendlySelection{
+			Representation:            "friendly",
+			Revision:                  s.friendlyRevision,
+			SectionID:                 section.ID,
+			BlockIndex:                -1,
+			Quote:                     quote,
 			CandidateSourceSectionIDs: append([]string(nil), section.SourceSectionIDs...),
 		}, nil
 	}

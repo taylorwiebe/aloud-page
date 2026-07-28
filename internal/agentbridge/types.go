@@ -17,12 +17,14 @@ type Descriptor struct {
 }
 
 type Selection struct {
-	Text           string `json:"text"`
-	Representation string `json:"representation"`
-	SectionID      string `json:"section_id,omitempty"`
-	Start          int    `json:"start,omitempty"`
-	End            int    `json:"end,omitempty"`
-	Revision       string `json:"revision,omitempty"`
+	Text                      string   `json:"text"`
+	Representation            string   `json:"representation"`
+	SectionID                 string   `json:"section_id,omitempty"`
+	BlockIndex                int      `json:"block_index,omitempty"`
+	Start                     int      `json:"start,omitempty"`
+	End                       int      `json:"end,omitempty"`
+	Revision                  string   `json:"revision,omitempty"`
+	CandidateSourceSectionIDs []string `json:"candidate_source_section_ids,omitempty"`
 }
 
 type Turn struct {

@@ -90,6 +90,17 @@ func TestHTTPReturnsAgentHTMLAsUntrustedJSONText(t *testing.T) {
 	}
 }
 
+func TestHTTPAllowsSameOriginBrowserEventReadsWithoutOriginHeader(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	handler := NewHTTPHandler(broker, "")
+	request := httptest.NewRequest(http.MethodGet, "/browser/events?after=0", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHTTPTaskCanWaitForBrowserDecision(t *testing.T) {
 	broker := NewBroker("attachment-1", "task-secret")
 	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "change it"})

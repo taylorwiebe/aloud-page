@@ -57,6 +57,9 @@
   const localAudioLookahead = 6;
   const localStartupBufferSize = 3;
   const localStartupBufferWait = 2_000;
+  let speechPointerStart = null;
+  let speechPointerDragged = false;
+  let pendingPointerPlayback = 0;
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -95,9 +98,44 @@
     const index = state.sentences.length;
     node.classList.add("sentence");
     node.tabIndex = 0;
-    node.addEventListener("click", () => playFrom(index));
+    node.dataset.speakableIndex = String(index);
+    node.addEventListener("pointerdown", (event) => {
+      speechPointerStart = { x: event.clientX, y: event.clientY };
+      speechPointerDragged = false;
+    });
+    node.addEventListener("pointermove", (event) => {
+      if (!speechPointerStart) return;
+      if (Math.hypot(event.clientX - speechPointerStart.x, event.clientY - speechPointerStart.y) > 5) {
+        speechPointerDragged = true;
+      }
+    });
+    node.addEventListener("click", (event) => {
+      const selection = window.getSelection();
+      const suppressPlayback = event.detail !== 0 && (speechPointerDragged || (selection && !selection.isCollapsed));
+      speechPointerStart = null;
+      speechPointerDragged = false;
+      if (pendingPointerPlayback) {
+        window.clearTimeout(pendingPointerPlayback);
+        pendingPointerPlayback = 0;
+      }
+      if (suppressPlayback || event.detail > 1) return;
+      if (event.detail !== 0) {
+        pendingPointerPlayback = window.setTimeout(() => {
+          pendingPointerPlayback = 0;
+          const currentSelection = window.getSelection();
+          if (!currentSelection || currentSelection.isCollapsed) playFrom(index);
+        }, 250);
+        return;
+      }
+      playFrom(index);
+    });
+    node.addEventListener("dblclick", () => {
+      if (pendingPointerPlayback) window.clearTimeout(pendingPointerPlayback);
+      pendingPointerPlayback = 0;
+    });
     node.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") playFrom(index);
+      const selection = window.getSelection();
+      if ((event.key === "Enter" || event.key === " ") && (!selection || selection.isCollapsed)) playFrom(index);
     });
     state.sentences.push({ text, node, sourceIDs });
   }
@@ -106,13 +144,16 @@
     narration.sections.forEach((section) => {
       const article = element("article", "narration-section");
       article.id = `narration-${section.id}`;
+      article.dataset.friendlySection = section.id;
       const sectionHeading = element("h2", "", section.heading);
       addSpeakable(sectionHeading, section.heading, section.source_section_ids || []);
       article.append(sectionHeading);
       const paragraph = element("p", "narration-copy");
-      section.sentences.forEach((sentence) => {
+      section.sentences.forEach((sentence, blockIndex) => {
         const span = element("span", "sentence", sentence);
         addSpeakable(span, sentence, section.source_section_ids || []);
+        span.dataset.friendlySection = section.id;
+        span.dataset.blockIndex = String(blockIndex);
         paragraph.append(span);
       });
       article.append(paragraph);
@@ -825,6 +866,7 @@
       renderNarration(narration);
       renderRecap(narration);
       renderSource(readerDocument.sources);
+      window.PlanreaderConversation?.start(readerDocument);
       highlight(0);
       elements.status.textContent = "Ready";
       warmLocalAudioAhead(0);

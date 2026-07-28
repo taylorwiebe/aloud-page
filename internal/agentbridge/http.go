@@ -41,7 +41,8 @@ func (h *HTTPHandler) serveBrowser(w http.ResponseWriter, r *http.Request) {
 	if allowedOrigin == "" {
 		allowedOrigin = "http://" + r.Host
 	}
-	if r.Header.Get("Origin") != allowedOrigin {
+	origin := r.Header.Get("Origin")
+	if (r.Method != http.MethodGet && origin != allowedOrigin) || (origin != "" && origin != allowedOrigin) {
 		http.Error(w, "invalid origin", http.StatusForbidden)
 		return
 	}
