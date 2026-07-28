@@ -457,8 +457,15 @@ func (s *DocumentState) LocateFriendlySelection(revision, sectionID, quote strin
 		if section.ID != sectionID {
 			continue
 		}
+		renderedBlocks := []string{
+			section.Heading,
+			strings.Join(section.Sentences, ""),
+		}
+		if section.RecallQuestion != "" {
+			renderedBlocks = append(renderedBlocks, "Pause and recall: "+section.RecallQuestion)
+		}
 		matches := 0
-		for _, text := range append([]string{section.Heading}, section.Sentences...) {
+		for _, text := range renderedBlocks {
 			matches += strings.Count(text, quote)
 		}
 		if matches != 1 {

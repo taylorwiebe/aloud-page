@@ -303,6 +303,27 @@ func TestResolveFriendlySelectionReturnsOnlyCandidateSections(t *testing.T) {
 	}
 }
 
+func TestLocateFriendlySelectionAcrossRenderedSentenceBoundaries(t *testing.T) {
+	source := "# One\n\nAlpha.\n"
+	friendly := narration.Narration{Title: "Friendly", Sections: []narration.NarrationSection{{
+		ID: "summary", Heading: "Summary", SourceSectionIDs: []string{"source-0"},
+		Sentences: []string{"Interaction is one-way.", "The proposal adds a conversation."},
+	}}}
+	state := testDocumentState(t, source, friendly)
+
+	got, err := state.LocateFriendlySelection(
+		state.FriendlyRevision(),
+		"summary",
+		"one-way.The proposal",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Quote != "one-way.The proposal" || got.BlockIndex != -1 {
+		t.Fatalf("located friendly selection = %#v", got)
+	}
+}
+
 func TestDocumentStateDetectsExternalEdit(t *testing.T) {
 	state := testDocumentState(t, "# One\n\nAlpha.\n", narration.Narration{Title: "Friendly", Sections: []narration.NarrationSection{{
 		ID: "one", Heading: "One", SourceSectionIDs: []string{"source-0"}, Sentences: []string{"Alpha."},
