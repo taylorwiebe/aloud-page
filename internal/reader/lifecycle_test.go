@@ -27,6 +27,19 @@ func TestAgentLifecycleReleaseUsesReloadGrace(t *testing.T) {
 	}
 }
 
+func TestAgentLifecycleAllowsInitialBrowserConnection(t *testing.T) {
+	shutdown := make(chan struct{}, 1)
+	lifecycle := newAgentLifecycleWithWarning(func() { shutdown <- struct{}{} }, nil, 40*time.Millisecond, time.Hour, 10*time.Millisecond)
+	defer lifecycle.Close()
+	time.Sleep(15 * time.Millisecond)
+	lifecycle.Heartbeat("tab")
+	select {
+	case <-shutdown:
+		t.Fatal("reader shut down before its first browser could connect")
+	case <-time.After(35 * time.Millisecond):
+	}
+}
+
 func TestAgentLifecycleWarnsBeforeMaximumLifetime(t *testing.T) {
 	var warned atomic.Bool
 	shutdown := make(chan struct{}, 1)

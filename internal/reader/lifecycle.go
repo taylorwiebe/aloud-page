@@ -20,6 +20,7 @@ type agentLifecycle struct {
 	done         chan struct{}
 	closeOnce    sync.Once
 	reloadGrace  time.Duration
+	startedAt    time.Time
 	warn         func()
 	browserLease interface {
 		BrowserHeartbeat(string) agentbridge.BrowserRole
@@ -38,6 +39,7 @@ func newAgentLifecycleWithWarning(shutdown, warn func(), idleTimeout, maximumLif
 		shutdown:    shutdown,
 		done:        make(chan struct{}),
 		reloadGrace: reloadGrace,
+		startedAt:   time.Now(),
 		warn:        warn,
 	}
 	go lifecycle.watch(maximumLifetime)
@@ -104,7 +106,7 @@ func (l *agentLifecycle) watch(maximumLifetime time.Duration) {
 					delete(l.sessions, id)
 				}
 			}
-			idle := len(l.sessions) == 0
+			idle := len(l.sessions) == 0 && now.Sub(l.startedAt) >= l.idleTimeout
 			l.mu.Unlock()
 			if idle {
 				l.requestShutdown()
