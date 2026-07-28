@@ -182,6 +182,37 @@ func (s *DocumentState) ApplyApprovedSourceChange(ctx context.Context, change Ap
 	return s.regenerateLocked(ctx, regenerate)
 }
 
+// ReconcileApprovedSourceChange records an already executed, approved change and
+// atomically republishes the authoritative and friendly representations.
+func (s *DocumentState) ReconcileApprovedSourceChange(ctx context.Context, change ApprovedSourceChange, regenerate RegenerateNarration) (DocumentSnapshot, error) {
+	if change.ProposalID == "" || change.ProposalDigest == "" || change.BaseSourceDigest == "" || !change.ChangesPlan {
+		return DocumentSnapshot{}, errors.New("approved source change is incomplete")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prior, ok := s.appliedChanges[change.ProposalID]; ok {
+		if prior == change.ProposalDigest {
+			return s.snapshotLocked(), ErrAlreadyApplied
+		}
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	if hex.EncodeToString(s.contentDigest[:]) != change.BaseSourceDigest {
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	raw, err := readAuthoritativeSource(s.canonicalPath, [sha256.Size]byte{})
+	if err != nil {
+		return s.snapshotLocked(), err
+	}
+	if sha256.Sum256(raw) == s.contentDigest {
+		return s.snapshotLocked(), ErrStaleRevision
+	}
+	s.appliedChanges[change.ProposalID] = change.ProposalDigest
+	if err := s.publishSourceLocked(raw); err != nil {
+		return s.snapshotLocked(), err
+	}
+	return s.regenerateLocked(ctx, regenerate)
+}
+
 func (s *DocumentState) RetryFriendlyNarration(ctx context.Context, sourceDigest string, regenerate RegenerateNarration) (DocumentSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

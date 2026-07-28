@@ -117,3 +117,31 @@ func TestHTTPTaskCanWaitForBrowserDecision(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
+
+func TestHTTPReconcileRequiresApprovedMatchingProposal(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "tab", Text: "change"})
+	proposal := Proposal{ID: "action-1", TurnID: turn.ID, Digest: "digest-1", DocumentRevision: "rev-1", ExpiresAt: time.Now().Add(time.Minute)}
+	_, _ = broker.Publish(Event{ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: EventProposal, Proposal: &proposal})
+	called := false
+	handler := NewHTTPHandlerWithReconciler(broker, "", func(_ *http.Request, got Proposal) (any, error) {
+		called = true
+		return got, nil
+	})
+	body := `{"action_id":"action-1","proposal_digest":"digest-1","document_revision":"rev-1"}`
+	send := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/task/reconcile", strings.NewReader(body))
+		request.Header.Set(taskSecretHeader, "task-secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := send(); response.Code != http.StatusConflict || called {
+		t.Fatalf("unapproved status = %d, called=%v", response.Code, called)
+	}
+	_, _ = broker.Decide(Decision{ID: "decision-1", ActionID: proposal.ID, ProposalDigest: proposal.Digest, DocumentRevision: proposal.DocumentRevision, Approved: true})
+	if response := send(); response.Code != http.StatusOK || !called {
+		t.Fatalf("approved status = %d, called=%v", response.Code, called)
+	}
+}

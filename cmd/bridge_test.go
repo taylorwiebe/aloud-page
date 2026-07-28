@@ -93,6 +93,28 @@ func TestBridgeDecisionWaitsForOneProposalDecision(t *testing.T) {
 	}
 }
 
+func TestBridgeReconcileSendsApprovedProposalIdentity(t *testing.T) {
+	var got agentbridge.ReconcileRequest
+	client := testHTTPClient(func(r *http.Request) *http.Response {
+		if r.URL.Path != "/bridge/task/reconcile" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return bridgeResponse(http.StatusOK, `{}`)
+	})
+	command := newBridgeCommandWithClient(io.Discard, client)
+	command.SetArgs([]string{"reconcile", "--descriptor", writeTestDescriptor(t), "--action", "action-1",
+		"--proposal-digest", "digest-1", "--document-revision", "rev-1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.ActionID != "action-1" || got.ProposalDigest != "digest-1" || got.DocumentRevision != "rev-1" {
+		t.Fatalf("reconcile request = %#v", got)
+	}
+}
+
 func TestBridgeRejectsDescriptorReadableByOtherUsers(t *testing.T) {
 	path := writeTestDescriptor(t)
 	if err := os.Chmod(path, 0o644); err != nil {

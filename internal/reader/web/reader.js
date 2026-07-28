@@ -878,7 +878,10 @@
   }
 
   function startAgentLifecycle() {
-    const sessionID = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    const sessionID = globalThis.PlanreaderBrowserID ||
+      globalThis.crypto?.randomUUID?.() ||
+      `${Date.now()}-${Math.random()}`;
+    globalThis.PlanreaderBrowserID = sessionID;
     const request = (method, keepalive = false) => fetch("api/agent/heartbeat", {
       method,
       headers: { "X-Planreader-Session": sessionID },

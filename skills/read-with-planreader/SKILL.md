@@ -68,7 +68,13 @@ Use Planreader as the single source of truth for preparing the human-readable na
      native Codex authorization normally. If native authorization is denied,
      publish `authorization_denied` and do not report completion or retry by
      changing providers.
-  6. Publish exactly one terminal event: `completed`, `failed`, `cancelled`, or
+  6. After executing an approved proposal, run
+     `planreader bridge reconcile --descriptor PATH --action ACTION_ID
+     --proposal-digest DIGEST --document-revision REVISION`. Do this for both
+     plan and repository-only proposals so Planreader can verify the exact
+     approval, detect authoritative source changes, and regenerate or visibly
+     mark stale friendly content before completion.
+  7. Publish exactly one terminal event: `completed`, `failed`, `cancelled`, or
      `authorization_denied`. On cancellation, interrupt in-flight work before
      publishing `cancelled`. Then wait for the next turn unless the reader has
      disconnected or closed.

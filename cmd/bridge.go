@@ -29,7 +29,37 @@ func newBridgeCommandWithClient(stdout io.Writer, client *http.Client) *cobra.Co
 		Hidden: true,
 	}
 	command.AddCommand(newBridgeProbeCommand(stdout))
-	command.AddCommand(newBridgeWaitCommand(stdout, client), newBridgePublishCommand(stdout, client), newBridgeDecisionCommand(stdout, client))
+	command.AddCommand(newBridgeWaitCommand(stdout, client), newBridgePublishCommand(stdout, client), newBridgeDecisionCommand(stdout, client), newBridgeReconcileCommand(stdout, client))
+	return command
+}
+
+func newBridgeReconcileCommand(stdout io.Writer, client *http.Client) *cobra.Command {
+	var descriptorPath, actionID, digest, revision string
+	command := &cobra.Command{
+		Use: "reconcile", Short: "Reconcile an approved source change",
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			descriptor, err := readBridgeDescriptor(descriptorPath)
+			if err != nil {
+				return err
+			}
+			body, err := json.Marshal(agentbridge.ReconcileRequest{
+				ActionID: actionID, ProposalDigest: digest, DocumentRevision: revision,
+			})
+			if err != nil {
+				return err
+			}
+			return bridgeRequest(command.Context(), client, http.MethodPost, descriptor.Endpoint+"/task/reconcile", descriptor.TaskSecret, body, stdout)
+		},
+	}
+	command.Flags().StringVar(&descriptorPath, "descriptor", "", "owner-only reader bridge descriptor")
+	command.Flags().StringVar(&actionID, "action", "", "approved proposal action identity")
+	command.Flags().StringVar(&digest, "proposal-digest", "", "approved proposal digest")
+	command.Flags().StringVar(&revision, "document-revision", "", "approved document revision")
+	_ = command.MarkFlagRequired("descriptor")
+	_ = command.MarkFlagRequired("action")
+	_ = command.MarkFlagRequired("proposal-digest")
+	_ = command.MarkFlagRequired("document-revision")
 	return command
 }
 

@@ -2,6 +2,7 @@ package reader
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -36,6 +37,7 @@ type ReaderDocument struct {
 	CanEdit          bool                    `json:"can_edit"`
 	AgentManaged     bool                    `json:"agent_managed,omitempty"`
 	State            *DocumentState          `json:"-"`
+	Regenerate       RegenerateNarration     `json:"-"`
 }
 
 type RenderedSourceSection struct {
@@ -277,7 +279,9 @@ func startServer(document ReaderDocument, shutdownRequested func()) (string, age
 		}
 		broker = agentbridge.NewBrokerWithLeases(descriptor.AttachmentID, descriptor.TaskSecret, 5*time.Second, 2*time.Minute)
 		lifecycle.browserLease = broker
-		bridge = agentbridge.NewHTTPHandler(broker, "")
+		bridge = agentbridge.NewHTTPHandlerWithReconciler(broker, "", func(r *http.Request, proposal agentbridge.Proposal) (any, error) {
+			return reconcileApprovedProposal(r.Context(), document, proposal)
+		})
 	}
 	server := &http.Server{
 		Handler:           newReaderHandlerWithBridge(document, token, speechService, lifecycle, bridge),
@@ -297,6 +301,19 @@ func startServer(document ReaderDocument, shutdownRequested func()) (string, age
 	url := fmt.Sprintf("http://%s/reader/%s/", listener.Addr().String(), token)
 	descriptor.Endpoint = strings.TrimRight(url, "/") + "/api/conversation"
 	return url, descriptor, server, nil
+}
+
+func reconcileApprovedProposal(ctx context.Context, document ReaderDocument, proposal agentbridge.Proposal) (DocumentSnapshot, error) {
+	if document.State == nil || !document.CanEdit {
+		return DocumentSnapshot{}, agentbridge.ErrInvalidState
+	}
+	if !proposal.ChangesPlan {
+		return document.State.Snapshot(), nil
+	}
+	return document.State.ReconcileApprovedSourceChange(ctx, ApprovedSourceChange{
+		ProposalID: proposal.ID, ProposalDigest: proposal.Digest,
+		BaseSourceDigest: proposal.BaseSourceDigest, ChangesPlan: true,
+	}, document.Regenerate)
 }
 
 func OpenBrowser(url string) error {

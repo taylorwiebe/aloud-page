@@ -67,9 +67,16 @@ type Proposal struct {
 type Decision struct {
 	ID               string `json:"id"`
 	ActionID         string `json:"action_id"`
+	ControllerID     string `json:"controller_id,omitempty"`
 	ProposalDigest   string `json:"proposal_digest"`
 	DocumentRevision string `json:"document_revision"`
 	Approved         bool   `json:"approved"`
+}
+
+type ReconcileRequest struct {
+	ActionID         string `json:"action_id"`
+	ProposalDigest   string `json:"proposal_digest"`
+	DocumentRevision string `json:"document_revision"`
 }
 
 type Event struct {

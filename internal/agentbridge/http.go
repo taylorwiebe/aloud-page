@@ -17,10 +17,15 @@ const (
 type HTTPHandler struct {
 	broker        *Broker
 	allowedOrigin string
+	reconcile     func(*http.Request, Proposal) (any, error)
 }
 
 func NewHTTPHandler(broker *Broker, allowedOrigin string) http.Handler {
 	return &HTTPHandler{broker: broker, allowedOrigin: strings.TrimRight(allowedOrigin, "/")}
+}
+
+func NewHTTPHandlerWithReconciler(broker *Broker, allowedOrigin string, reconcile func(*http.Request, Proposal) (any, error)) http.Handler {
+	return &HTTPHandler{broker: broker, allowedOrigin: strings.TrimRight(allowedOrigin, "/"), reconcile: reconcile}
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +125,26 @@ func (h *HTTPHandler) serveTask(w http.ResponseWriter, r *http.Request) {
 		}
 		decision, err := h.broker.WaitDecision(r.Context(), r.URL.Query().Get("action_id"))
 		writeResult(w, decision, err, http.StatusOK)
+	case "/task/reconcile":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		var request ReconcileRequest
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		proposal, err := h.broker.ApprovedProposal(request)
+		if err != nil {
+			writeResult(w, struct{}{}, err, http.StatusOK)
+			return
+		}
+		if h.reconcile == nil {
+			writeResult(w, struct{}{}, ErrInvalidState, http.StatusOK)
+			return
+		}
+		result, err := h.reconcile(r, proposal)
+		writeResult(w, result, err, http.StatusOK)
 	default:
 		http.NotFound(w, r)
 	}

@@ -3,6 +3,7 @@ package agentbridge
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -85,6 +86,48 @@ func TestBrokerTaskExpiryFreezesSubmissionAndReconnects(t *testing.T) {
 	}
 }
 
+func TestBrokerTaskExpiryDisconnectsAndReleasesActiveTurn(t *testing.T) {
+	broker := NewBrokerWithLeases("attachment-1", "task-secret", time.Minute, 20*time.Millisecond)
+	defer broker.Close()
+	if err := broker.TaskHeartbeat("attachment-1"); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "tab", Text: "question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events := broker.Replay(0)
+		if len(events) == 1 && events[0].Type == EventDisconnected {
+			if events[0].TurnID != turn.ID || !events[0].Interrupted {
+				t.Fatalf("disconnect event = %#v", events[0])
+			}
+			if broker.active != nil {
+				t.Fatal("expired task retained its active turn")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("task expiry did not publish disconnection")
+}
+
+func TestBrokerApprovedProposalRequiresMatchingApproval(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "tab", Text: "change"})
+	proposal := Proposal{ID: "action-1", TurnID: turn.ID, Digest: "digest-1", DocumentRevision: "rev-1", ExpiresAt: time.Now().Add(time.Minute)}
+	_, _ = broker.Publish(Event{ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: EventProposal, Proposal: &proposal})
+	request := ReconcileRequest{ActionID: proposal.ID, ProposalDigest: proposal.Digest, DocumentRevision: proposal.DocumentRevision}
+	if _, err := broker.ApprovedProposal(request); !errors.Is(err, ErrStaleProposal) {
+		t.Fatalf("unapproved proposal error = %v", err)
+	}
+	_, _ = broker.Decide(Decision{ID: "decision-1", ActionID: proposal.ID, ProposalDigest: proposal.Digest, DocumentRevision: proposal.DocumentRevision, Approved: true})
+	if got, err := broker.ApprovedProposal(request); err != nil || got.ID != proposal.ID {
+		t.Fatalf("approved proposal = %#v, %v", got, err)
+	}
+}
+
 func TestBrokerObserverTakesOverAfterControllerReleaseWithoutDuplicatingTurn(t *testing.T) {
 	broker := NewBrokerWithLeases("attachment-1", "task-secret", 15*time.Millisecond, time.Minute)
 	defer broker.Close()
@@ -162,6 +205,8 @@ func TestBrokerRejectsStaleProposalDecision(t *testing.T) {
 	if duplicate, err := broker.Decide(decision); err != nil || duplicate.ID != decision.ID {
 		t.Fatalf("duplicate decision = %#v, %v", duplicate, err)
 	}
+	delete(broker.actionDecisions, proposal.ID)
+	delete(broker.decisions, decision.ID)
 	proposal.ExpiresAt = time.Now().Add(-time.Second)
 	broker.proposals[proposal.ID] = proposal
 	if _, err := broker.Decide(Decision{ID: "decision-2", ActionID: proposal.ID, ProposalDigest: proposal.Digest, DocumentRevision: proposal.DocumentRevision}); !errors.Is(err, ErrStaleProposal) {
@@ -212,6 +257,26 @@ func TestBrokerConservativelyNormalizesUnknownProviderEvent(t *testing.T) {
 	}
 }
 
+func TestBrokerRejectsChangedProposalWithReusedActionID(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "change it"})
+	proposal := Proposal{
+		ID: "action-1", TurnID: turn.ID, Digest: "digest-1", Scope: "first scope",
+		DocumentRevision: "rev-1", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if _, err := broker.Publish(Event{ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: EventProposal, Proposal: &proposal}); err != nil {
+		t.Fatal(err)
+	}
+	changed := proposal
+	changed.Scope = "different scope"
+	if _, err := broker.Publish(Event{ID: "event-2", TurnID: turn.ID, Sequence: 2, Type: EventProposal, Proposal: &changed}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed proposal error = %v, want conflict", err)
+	}
+	if got := broker.proposals[proposal.ID]; !reflect.DeepEqual(got, proposal) {
+		t.Fatalf("stored proposal changed: %#v", got)
+	}
+}
+
 func TestBrokerNativeAuthorizationDenialCannotBecomeCompletion(t *testing.T) {
 	broker := NewBroker("attachment-1", "task-secret")
 	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "change it"})
@@ -240,5 +305,60 @@ func TestBrokerNativeAuthorizationDenialCannotBecomeCompletion(t *testing.T) {
 	}
 	if _, err := broker.Publish(Event{ID: "event-3", TurnID: turn.ID, Sequence: 3, Type: EventCompleted}); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("completion after native denial error = %v", err)
+	}
+}
+
+func TestBrokerDecisionIsSingleUsePerActionAndRetryIsIdempotent(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "question"})
+	proposal := Proposal{ID: "action-1", TurnID: turn.ID, Digest: "digest-1", DocumentRevision: "rev-1", ExpiresAt: time.Now().Add(time.Minute)}
+	_, _ = broker.Publish(Event{ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: EventProposal, Proposal: &proposal})
+	first := Decision{ID: "decision-1", ActionID: proposal.ID, ProposalDigest: proposal.Digest, DocumentRevision: proposal.DocumentRevision}
+	if _, err := broker.Decide(first); err != nil {
+		t.Fatal(err)
+	}
+	retry := first
+	retry.ID = "decision-retry"
+	got, err := broker.Decide(retry)
+	if err != nil || got.ID != first.ID {
+		t.Fatalf("idempotent retry = %#v, %v", got, err)
+	}
+	changed := retry
+	changed.ID = "decision-changed"
+	changed.Approved = true
+	if _, err := broker.Decide(changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed decision error = %v, want conflict", err)
+	}
+	got, err = broker.WaitDecision(context.Background(), proposal.ID)
+	if err != nil || got.Approved {
+		t.Fatalf("wait returned %#v, %v; rejection must remain authoritative", got, err)
+	}
+}
+
+func TestBrokerObserverCannotDecideProposal(t *testing.T) {
+	broker := NewBrokerWithLeases("attachment-1", "task-secret", time.Minute, time.Minute)
+	defer broker.Close()
+	if err := broker.TaskHeartbeat("attachment-1"); err != nil {
+		t.Fatal(err)
+	}
+	broker.BrowserHeartbeat("controller-1")
+	broker.BrowserHeartbeat("observer-1")
+	turn, err := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := Proposal{ID: "action-1", TurnID: turn.ID, Digest: "digest-1", DocumentRevision: "rev-1", ExpiresAt: time.Now().Add(time.Minute)}
+	_, _ = broker.Publish(Event{ID: "event-1", TurnID: turn.ID, Sequence: 1, Type: EventProposal, Proposal: &proposal})
+	decision := Decision{
+		ID: "decision-1", ActionID: proposal.ID, ControllerID: "observer-1",
+		ProposalDigest: proposal.Digest, DocumentRevision: proposal.DocumentRevision, Approved: true,
+	}
+	if _, err := broker.Decide(decision); !errors.Is(err, ErrNotController) {
+		t.Fatalf("observer decision error = %v, want not controller", err)
+	}
+	decision.ID = "decision-2"
+	decision.ControllerID = "controller-1"
+	if _, err := broker.Decide(decision); err != nil {
+		t.Fatalf("controller decision: %v", err)
 	}
 }

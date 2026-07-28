@@ -202,6 +202,11 @@ func runReader(config options, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("verifying authoritative document state: %w", err)
 	}
 	document.CanEdit = config.agentManaged
+	document.Regenerate = func(ctx context.Context, markdown string, sections []narration.SourceSection) (narration.Narration, error) {
+		return runner.Generate(ctx, markdown, narration.ReaderOptions{
+			Depth: depthPrompt, Audience: config.audience, Sections: sections,
+		})
+	}
 	return serveReader(document, config.noOpen, config.agentManaged, stdout, stderr)
 }
 

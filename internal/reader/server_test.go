@@ -39,6 +39,28 @@ func TestReaderDataRefreshesAtomicallyFromDocumentState(t *testing.T) {
 	}
 }
 
+func TestReconcileApprovedProposalRefreshesChangedSource(t *testing.T) {
+	state := testDocumentState(t, "# One\n\nAlpha.\n", friendlyForSource("Alpha."))
+	if err := os.WriteFile(state.canonicalPath, []byte("# One\n\nChanged.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := reconcileApprovedProposal(context.Background(), ReaderDocument{
+		State: state, CanEdit: true,
+		Regenerate: func(context.Context, string, []narration.SourceSection) (narration.Narration, error) {
+			return friendlyForSource("Changed."), nil
+		},
+	}, agentbridge.Proposal{
+		ID: "action-1", Digest: "digest-1", BaseSourceDigest: state.SourceDigest(), ChangesPlan: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Source, "Changed.") || result.FriendlyStale ||
+		result.Narration.Sections[0].Sentences[0] != "Changed." {
+		t.Fatalf("reconciled document = %#v", result)
+	}
+}
+
 func readReaderDocument(t *testing.T, handler http.Handler, path string) ReaderDocument {
 	t.Helper()
 	recorder := httptest.NewRecorder()
@@ -712,10 +734,16 @@ func TestAttachedConversationAssetsCoverDockAndSafeSelection(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{"sessionStorage", "selectionchange", `representation === "original"`,
-		"observer-only", "Approval required", "Provider authorization", "Reconnecting", "textContent"} {
+		"observer-only", "Approval required", "Provider authorization", "Reconnecting", "textContent",
+		"source_diff", "friendly_effect", "authorization_denied", "controller_id: controllerID",
+		"proposalNode.dataset.deciding"} {
 		if !strings.Contains(string(conversation), expected) {
 			t.Errorf("conversation behavior missing %q", expected)
 		}
+	}
+	if !strings.Contains(string(reader), "globalThis.PlanreaderBrowserID") ||
+		!strings.Contains(string(conversation), "globalThis.PlanreaderBrowserID") {
+		t.Fatal("conversation and lifecycle do not share one stable browser identity")
 	}
 	if !strings.Contains(string(reader), `speechPointerDragged || (selection && !selection.isCollapsed)`) {
 		t.Fatal("pointer text selection can still trigger speech")

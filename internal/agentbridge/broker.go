@@ -24,37 +24,41 @@ var (
 const maxJournalEvents = 1024
 
 type Broker struct {
-	mu           sync.Mutex
-	changed      chan struct{}
-	attachmentID string
-	taskSecret   string
-	controllerID string
-	active       *Turn
-	turns        map[string]Turn
-	events       []Event
-	eventIDs     map[string]Event
-	decisions    map[string]Decision
-	proposals    map[string]Proposal
-	disconnected bool
-	closed       bool
-	leases       *LeaseManager
+	mu              sync.Mutex
+	changed         chan struct{}
+	attachmentID    string
+	taskSecret      string
+	controllerID    string
+	active          *Turn
+	turns           map[string]Turn
+	events          []Event
+	eventIDs        map[string]Event
+	decisions       map[string]Decision
+	actionDecisions map[string]Decision
+	proposals       map[string]Proposal
+	disconnected    bool
+	closed          bool
+	leases          *LeaseManager
+	taskWaiters     int
 }
 
 func NewBroker(attachmentID, taskSecret string) *Broker {
 	return &Broker{
-		changed:      make(chan struct{}),
-		attachmentID: attachmentID,
-		taskSecret:   taskSecret,
-		turns:        make(map[string]Turn),
-		eventIDs:     make(map[string]Event),
-		decisions:    make(map[string]Decision),
-		proposals:    make(map[string]Proposal),
+		changed:         make(chan struct{}),
+		attachmentID:    attachmentID,
+		taskSecret:      taskSecret,
+		turns:           make(map[string]Turn),
+		eventIDs:        make(map[string]Event),
+		decisions:       make(map[string]Decision),
+		actionDecisions: make(map[string]Decision),
+		proposals:       make(map[string]Proposal),
 	}
 }
 
 func NewBrokerWithLeases(attachmentID, taskSecret string, reloadGrace, taskTTL time.Duration) *Broker {
 	broker := NewBroker(attachmentID, taskSecret)
 	broker.leases = NewLeaseManager(attachmentID, reloadGrace, taskTTL)
+	go broker.watchTaskLease(taskTTL)
 	return broker
 }
 
@@ -74,7 +78,7 @@ func (b *Broker) SubmitTurn(turn Turn) (Turn, error) {
 	if b.closed {
 		return Turn{}, ErrClosed
 	}
-	if b.leases != nil && !b.leases.TaskConnected() {
+	if b.leases != nil && !b.taskConnectedLocked() {
 		return Turn{}, ErrDisconnected
 	}
 	if existing, ok := b.turns[turn.ID]; ok {
@@ -105,6 +109,14 @@ func (b *Broker) WaitTurn(ctx context.Context, attachmentID string) (Turn, error
 	if attachmentID != "" && attachmentID != b.attachmentID {
 		return Turn{}, ErrAttachment
 	}
+	b.mu.Lock()
+	b.taskWaiters++
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		b.taskWaiters--
+		b.mu.Unlock()
+	}()
 	for {
 		b.mu.Lock()
 		if b.closed {
@@ -114,6 +126,7 @@ func (b *Broker) WaitTurn(ctx context.Context, attachmentID string) (Turn, error
 		if b.active != nil {
 			turn := *b.active
 			b.mu.Unlock()
+			_ = b.TaskHeartbeat(b.attachmentID)
 			return turn, nil
 		}
 		wait := b.changed
@@ -124,6 +137,34 @@ func (b *Broker) WaitTurn(ctx context.Context, attachmentID string) (Turn, error
 		case <-wait:
 		}
 	}
+}
+
+func (b *Broker) ApprovedProposal(request ReconcileRequest) (Proposal, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	proposal, ok := b.proposals[request.ActionID]
+	if !ok || proposal.Digest != request.ProposalDigest ||
+		proposal.DocumentRevision != request.DocumentRevision || proposal.Cancelled ||
+		proposal.ExpiresAt.IsZero() || !time.Now().Before(proposal.ExpiresAt) {
+		return Proposal{}, ErrStaleProposal
+	}
+	var matched *Decision
+	for _, decision := range b.decisions {
+		if decision.ActionID != proposal.ID {
+			continue
+		}
+		if matched != nil {
+			return Proposal{}, ErrStaleProposal
+		}
+		copy := decision
+		matched = &copy
+	}
+	if matched != nil && matched.Approved &&
+		matched.ProposalDigest == proposal.Digest &&
+		matched.DocumentRevision == proposal.DocumentRevision {
+		return proposal, nil
+	}
+	return Proposal{}, ErrStaleProposal
 }
 
 func (b *Broker) Publish(event Event) (Event, error) {
@@ -157,6 +198,9 @@ func (b *Broker) Publish(event Event) (Event, error) {
 			event.Proposal.Scope == "" || event.Proposal.FriendlyEffect == "") {
 			return Event{}, ErrInvalidState
 		}
+		if existing, ok := b.proposals[event.Proposal.ID]; ok && !reflect.DeepEqual(existing, *event.Proposal) {
+			return Event{}, ErrConflict
+		}
 		b.proposals[event.Proposal.ID] = *event.Proposal
 	}
 	b.appendEventLocked(event)
@@ -180,6 +224,14 @@ func (b *Broker) Decide(decision Decision) (Decision, error) {
 		}
 		return Decision{}, ErrConflict
 	}
+	if existing, ok := b.actionDecisions[decision.ActionID]; ok {
+		retry := decision
+		retry.ID = existing.ID
+		if reflect.DeepEqual(existing, retry) {
+			return existing, nil
+		}
+		return Decision{}, ErrConflict
+	}
 	proposal, ok := b.proposals[decision.ActionID]
 	if !ok || proposal.Cancelled || proposal.ExpiresAt.IsZero() || !time.Now().Before(proposal.ExpiresAt) ||
 		proposal.Digest != decision.ProposalDigest || proposal.DocumentRevision != decision.DocumentRevision ||
@@ -189,7 +241,11 @@ func (b *Broker) Decide(decision Decision) (Decision, error) {
 	if decision.ID == "" {
 		return Decision{}, ErrInvalidState
 	}
+	if b.leases != nil && (decision.ControllerID == "" || decision.ControllerID != b.controllerID) {
+		return Decision{}, ErrNotController
+	}
 	b.decisions[decision.ID] = decision
+	b.actionDecisions[decision.ActionID] = decision
 	b.signalLocked()
 	return decision, nil
 }
@@ -204,11 +260,9 @@ func (b *Broker) WaitDecision(ctx context.Context, actionID string) (Decision, e
 			b.mu.Unlock()
 			return Decision{}, ErrClosed
 		}
-		for _, decision := range b.decisions {
-			if decision.ActionID == actionID {
-				b.mu.Unlock()
-				return decision, nil
-			}
+		if decision, ok := b.actionDecisions[actionID]; ok {
+			b.mu.Unlock()
+			return decision, nil
 		}
 		if _, ok := b.proposals[actionID]; !ok {
 			b.mu.Unlock()
@@ -310,8 +364,35 @@ func (b *Broker) Disconnect() {
 		}
 		b.appendEventLocked(event)
 		b.eventIDs[event.ID] = event
+		b.active = nil
 	}
 	b.signalLocked()
+}
+
+func (b *Broker) taskConnectedLocked() bool {
+	return b.taskWaiters > 0 || b.leases.TaskConnected()
+}
+
+func (b *Broker) watchTaskLease(taskTTL time.Duration) {
+	interval := taskTTL / 4
+	if interval < 5*time.Millisecond {
+		interval = 5 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return
+		}
+		connected := b.taskConnectedLocked()
+		active := b.active != nil
+		b.mu.Unlock()
+		if active && !connected {
+			b.Disconnect()
+		}
+	}
 }
 
 func (b *Broker) appendEventLocked(event Event) {

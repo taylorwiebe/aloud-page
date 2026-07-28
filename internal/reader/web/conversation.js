@@ -10,10 +10,14 @@
   let saved = {};
   try { saved = JSON.parse(sessionStorage.getItem("planreader-conversation") || "{}"); } catch (_) {}
   const state = { mode: saved.mode || "compact", draft: saved.draft || "", selection: saved.selection || null,
-    events: saved.events || [], cursor: saved.cursor || 0, active: false, controller: true, document: null };
-  const controllerID = sessionStorage.getItem("planreader-controller") || (crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+    events: saved.events || [], cursor: saved.cursor || 0, active: false, controller: true, document: null,
+    followUpRequested: false };
+  const controllerID = globalThis.PlanreaderBrowserID ||
+    sessionStorage.getItem("planreader-controller") ||
+    (crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`);
   let selectionTimer;
   let selectionRequest;
+  globalThis.PlanreaderBrowserID = controllerID;
   sessionStorage.setItem("planreader-controller", controllerID);
 
   function persist() {
@@ -53,43 +57,77 @@
     ui.input.disabled = !enabled || !state.controller || state.active;
     ui.send.disabled = !enabled || !state.controller || state.active;
   }
+  function addProposalEffect(message, label, effect) {
+    if (!effect) return;
+    const heading = node("h3", "proposal-effect-heading", label);
+    const detail = node("pre", "proposal-effect", effect);
+    message.append(heading, detail);
+  }
+  function finishTurn(message, urgent = false) {
+    state.active = false;
+    setEnabled();
+    announce(message, urgent);
+    if (state.followUpRequested) {
+      state.followUpRequested = false;
+      queueMicrotask(() => ui.input.focus());
+    }
+  }
   function renderEvent(event) {
     if (event.type === "progress") { announce(event.text || "Agent is working…"); return; }
-    const message = node("article", `conversation-message ${event.type === "proposal" ? "proposal" : "agent"}`,
+    const kind = event.type === "proposal" ? "proposal" : event.type === "user" ? "user" : "agent";
+    const message = node("article", `conversation-message ${kind}`,
       event.text || event.diff || event.type);
     if (event.type === "proposal" && event.proposal) {
       message.tabIndex = -1;
-      const actions = node("div", "proposal-actions", "");
-      [["Approve", true], ["Reject", false], ["Continue discussing", null]].forEach(([label, approved]) => {
-        const button = node("button", approved === true ? "primary" : "secondary", label);
-        button.type = "button";
-        button.addEventListener("click", () => approved === null ? ui.input.focus() : decide(event, approved, message));
-        actions.append(button);
-      });
-      message.append(actions);
-      queueMicrotask(() => message.focus());
-      announce("Approval required. Review the proposed effects.", true);
+      addProposalEffect(message, "Source document effect", event.proposal.source_diff);
+      addProposalEffect(message, "Friendly document effect", event.proposal.friendly_effect);
+      if (!event.decided) {
+        const actions = node("div", "proposal-actions", "");
+        [["Approve", true], ["Reject", false], ["Continue discussing", null]].forEach(([label, approved]) => {
+          const button = node("button", approved === true ? "primary" : "secondary", label);
+          button.type = "button";
+          button.addEventListener("click", () => decide(event, approved === true, message, approved === null));
+          actions.append(button);
+        });
+        message.append(actions);
+        queueMicrotask(() => message.focus());
+        announce("Approval required. Review the proposed effects.", true);
+      }
     } else if (event.type === "disconnected") announce("The attached task is disconnected. Reconnect it to continue; this transcript is preserved.", true);
-    else if (event.type === "failed") announce("The agent reported an error. Your conversation is preserved.", true);
-    else if (event.type === "cancelled" || event.interrupted) announce("The response was interrupted. You can ask the agent to continue.", true);
-    else if (event.type === "completed") { state.active = false; setEnabled(); announce("Response complete."); }
+    else if (event.type === "failed") finishTurn("The agent reported an error. Your conversation is preserved.", true);
+    else if (event.type === "authorization_denied") finishTurn("Provider authorization was denied. No changes were applied.", true);
+    else if (event.type === "cancelled" || event.interrupted) finishTurn("The response was interrupted. You can ask the agent to continue.", true);
+    else if (event.type === "completed") finishTurn("Response complete.");
     ui.transcript.append(message);
     ui.transcript.scrollTop = ui.transcript.scrollHeight;
     if (state.mode === "compact") ui.unread.hidden = false;
   }
-  async function decide(event, approved, proposalNode) {
+  async function decide(event, approved, proposalNode, continueDiscussion = false) {
+    if (proposalNode.dataset.deciding === "true") return;
+    proposalNode.dataset.deciding = "true";
+    const proposalButtons = [...proposalNode.querySelectorAll("button")];
+    proposalButtons.forEach((button) => { button.disabled = true; });
     setEnabled(false);
     try {
       const response = await fetch("api/conversation/browser/decisions", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: crypto.randomUUID(), action_id: event.proposal.id,
-          proposal_digest: event.proposal.digest, document_revision: event.proposal.document_revision, approved }),
+          controller_id: controllerID, proposal_digest: event.proposal.digest,
+          document_revision: event.proposal.document_revision, approved }),
       });
       if (!response.ok) throw new Error(response.status === 409 ? "This proposal is stale or already decided." : "The approval could not be sent.");
-      announce(approved ? "Approved. Provider authorization may still be required." : "Proposal rejected.", true);
-      proposalNode.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-      ui.input.focus();
-    } catch (error) { announce(error.message, true); proposalNode.focus(); }
+      event.decided = true;
+      persist();
+      state.followUpRequested = continueDiscussion;
+      announce(approved ? "Approved. Provider authorization may still be required." :
+        continueDiscussion ? "Proposal declined. The composer will open when the agent is ready for your follow-up." : "Proposal rejected.", true);
+      if (!continueDiscussion) ui.input.focus();
+    } catch (error) {
+      delete proposalNode.dataset.deciding;
+      proposalButtons.forEach((button) => { button.disabled = false; });
+      announce(error.message, true);
+      proposalNode.focus();
+    }
     finally { setEnabled(); }
   }
   async function submit(event) {
@@ -102,11 +140,16 @@
         document_revision: state.document.document_revision, selection: state.selection }),
     });
     if (!response.ok) {
-      announce(response.status === 409 ? "Another tab controls this conversation. This tab is observer-only." : "The message could not be sent.", true);
-      if (response.status === 409) { state.controller = false; ui.role.textContent = "Observer tab"; }
+      const detail = await response.text();
+      const observer = response.status === 409 && detail.includes("only the elected controller");
+      announce(observer ? "Another tab controls this conversation. This tab is observer-only." :
+        response.status === 409 ? "Another response is still active. Wait for it to finish." : "The message could not be sent.", true);
+      if (observer) { state.controller = false; ui.role.textContent = "Observer tab"; }
       setEnabled(); return;
     }
-    ui.transcript.append(node("article", "conversation-message user", text));
+    const userEvent = { id: `user-${crypto.randomUUID()}`, type: "user", text };
+    state.events.push(userEvent);
+    renderEvent(userEvent);
     ui.input.value = ""; state.selection = null; showSelection(); state.active = true; setEnabled(); persist();
   }
   async function poll() {
