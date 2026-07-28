@@ -163,6 +163,7 @@ func startServer(document ReaderDocument, shutdownRequested func()) (string, age
 	}
 	var lifecycle *agentLifecycle
 	var bridge http.Handler
+	var broker *agentbridge.Broker
 	if shutdownRequested != nil {
 		lifecycle = newAgentLifecycle(shutdownRequested, 2*time.Minute, 12*time.Hour)
 		attachmentBytes := make([]byte, 24)
@@ -182,7 +183,8 @@ func startServer(document ReaderDocument, shutdownRequested func()) (string, age
 			AttachmentID: hex.EncodeToString(attachmentBytes),
 			TaskSecret:   hex.EncodeToString(taskSecretBytes),
 		}
-		broker := agentbridge.NewBroker(descriptor.AttachmentID, descriptor.TaskSecret)
+		broker = agentbridge.NewBrokerWithLeases(descriptor.AttachmentID, descriptor.TaskSecret, 5*time.Second, 2*time.Minute)
+		lifecycle.browserLease = broker
 		bridge = agentbridge.NewHTTPHandler(broker, "")
 	}
 	server := &http.Server{
@@ -193,6 +195,9 @@ func startServer(document ReaderDocument, shutdownRequested func()) (string, age
 		_ = server.Serve(listener)
 		if lifecycle != nil {
 			lifecycle.Close()
+		}
+		if broker != nil {
+			broker.Close()
 		}
 		speechService.Close()
 	}()

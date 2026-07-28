@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/taylorwiebe/planreader/internal/agentbridge"
 )
 
 const agentSessionHeader = "X-Planreader-Session"
@@ -17,14 +19,26 @@ type agentLifecycle struct {
 	shutdownOnce sync.Once
 	done         chan struct{}
 	closeOnce    sync.Once
+	reloadGrace  time.Duration
+	warn         func()
+	browserLease interface {
+		BrowserHeartbeat(string) agentbridge.BrowserRole
+		BrowserRelease(string)
+	}
 }
 
 func newAgentLifecycle(shutdown func(), idleTimeout, maximumLifetime time.Duration) *agentLifecycle {
+	return newAgentLifecycleWithWarning(shutdown, nil, idleTimeout, maximumLifetime, 5*time.Second)
+}
+
+func newAgentLifecycleWithWarning(shutdown, warn func(), idleTimeout, maximumLifetime, reloadGrace time.Duration) *agentLifecycle {
 	lifecycle := &agentLifecycle{
 		sessions:    make(map[string]time.Time),
 		idleTimeout: idleTimeout,
 		shutdown:    shutdown,
 		done:        make(chan struct{}),
+		reloadGrace: reloadGrace,
+		warn:        warn,
 	}
 	go lifecycle.watch(maximumLifetime)
 	return lifecycle
@@ -37,12 +51,21 @@ func (l *agentLifecycle) Heartbeat(sessionID string) {
 	l.mu.Lock()
 	l.sessions[sessionID] = time.Now()
 	l.mu.Unlock()
+	if l.browserLease != nil {
+		l.browserLease.BrowserHeartbeat(sessionID)
+	}
 }
 
 func (l *agentLifecycle) Release(sessionID string) {
 	l.mu.Lock()
-	delete(l.sessions, strings.TrimSpace(sessionID))
+	sessionID = strings.TrimSpace(sessionID)
+	if _, ok := l.sessions[sessionID]; ok {
+		l.sessions[sessionID] = time.Now().Add(l.reloadGrace - l.idleTimeout)
+	}
 	l.mu.Unlock()
+	if l.browserLease != nil {
+		l.browserLease.BrowserRelease(sessionID)
+	}
 }
 
 func (l *agentLifecycle) Close() {
@@ -62,6 +85,16 @@ func (l *agentLifecycle) watch(maximumLifetime time.Duration) {
 	defer ticker.Stop()
 	maximum := time.NewTimer(maximumLifetime)
 	defer maximum.Stop()
+	var warning <-chan time.Time
+	if l.warn != nil {
+		warningAt := maximumLifetime - l.reloadGrace
+		if warningAt < 0 {
+			warningAt = 0
+		}
+		warningTimer := time.NewTimer(warningAt)
+		defer warningTimer.Stop()
+		warning = warningTimer.C
+	}
 	for {
 		select {
 		case now := <-ticker.C:
@@ -80,6 +113,9 @@ func (l *agentLifecycle) watch(maximumLifetime time.Duration) {
 		case <-maximum.C:
 			l.requestShutdown()
 			return
+		case <-warning:
+			l.warn()
+			warning = nil
 		case <-l.done:
 			return
 		}

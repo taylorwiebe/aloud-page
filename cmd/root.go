@@ -236,11 +236,12 @@ func serveReader(document reader.ReaderDocument, noOpen, agentManaged bool, stdo
 		_ = server.Shutdown(shutdownCtx)
 	}()
 	if agentManaged {
-		encodedDescriptor, encodeErr := json.Marshal(descriptor)
-		if encodeErr != nil {
-			return fmt.Errorf("encoding bridge descriptor: %w", encodeErr)
+		descriptorPath, descriptorCleanup, descriptorErr := writeBridgeDescriptor(descriptor)
+		if descriptorErr != nil {
+			return descriptorErr
 		}
-		fmt.Fprintf(stdout, "Agent bridge: %s\n", encodedDescriptor)
+		defer descriptorCleanup()
+		fmt.Fprintf(stdout, "Agent bridge descriptor: %s\n", descriptorPath)
 		cleanup, err := claimAgentReader(url)
 		if err != nil {
 			fmt.Fprintf(stderr, "Could not register agent-managed cleanup: %v\n", err)
@@ -267,4 +268,31 @@ func serveReader(document reader.ReaderDocument, noOpen, agentManaged bool, stdo
 		return ctx.Err()
 	}
 	return nil
+}
+
+func writeBridgeDescriptor(descriptor agentbridge.Descriptor) (string, func(), error) {
+	return writeBridgeDescriptorAt("", descriptor)
+}
+
+func writeBridgeDescriptorAt(parent string, descriptor agentbridge.Descriptor) (string, func(), error) {
+	dir, err := os.MkdirTemp(parent, "planreader-bridge-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating private bridge directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("protecting private bridge directory: %w", err)
+	}
+	data, err := json.Marshal(descriptor)
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("encoding bridge descriptor: %w", err)
+	}
+	path := filepath.Join(dir, "descriptor.json")
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("writing private bridge descriptor: %w", err)
+	}
+	return path, cleanup, nil
 }

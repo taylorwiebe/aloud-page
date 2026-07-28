@@ -89,6 +89,10 @@ func (h *HTTPHandler) serveTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task credential", http.StatusUnauthorized)
 		return
 	}
+	if err := h.broker.TaskHeartbeat(h.broker.Attachment().ID); err != nil {
+		writeResult(w, struct{}{}, err, http.StatusNoContent)
+		return
+	}
 	switch r.URL.Path {
 	case "/task/turns/wait":
 		if r.Method != http.MethodGet {

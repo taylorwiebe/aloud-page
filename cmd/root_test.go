@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/taylorwiebe/planreader/internal/agentbridge"
 	"github.com/taylorwiebe/planreader/internal/narration"
 	"github.com/taylorwiebe/planreader/internal/reader"
 )
@@ -33,6 +34,54 @@ func TestClaimAgentReaderStopsPreviouslyRegisteredReader(t *testing.T) {
 	cleanup()
 	if _, err := os.Stat(registry); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("registry still exists after cleanup: %v", err)
+	}
+}
+
+func TestClaimAgentReaderRegistryNeverStoresBridgeSecret(t *testing.T) {
+	registry := filepath.Join(t.TempDir(), agentReaderFile)
+	readerURL := "http://127.0.0.1:1234/reader/browser-token/"
+	cleanup, err := claimAgentReaderAt(registry, readerURL, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	data, err := os.ReadFile(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "task-secret") || string(data) != readerURL {
+		t.Fatalf("registry leaked data beyond reader URL: %q", data)
+	}
+}
+
+func TestWriteBridgeDescriptorUsesPrivateFilesAndCleanup(t *testing.T) {
+	parent := t.TempDir()
+	path, cleanup, err := writeBridgeDescriptorAt(parent, agentbridge.Descriptor{
+		Version:      agentbridge.ProtocolVersion,
+		AttachmentID: "attachment-1",
+		Endpoint:     "http://127.0.0.1:1234/private",
+		TaskSecret:   "task-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("descriptor mode = %o", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "task-secret") {
+		t.Fatalf("descriptor = %s", data)
+	}
+	cleanup()
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descriptor directory remains after cleanup: %v", err)
 	}
 }
 

@@ -14,6 +14,8 @@ var (
 	ErrBusy          = errors.New("a turn is already active")
 	ErrConflict      = errors.New("identifier was already used with different content")
 	ErrInvalidState  = errors.New("invalid conversation state transition")
+	ErrClosed        = errors.New("conversation attachment is closed")
+	ErrDisconnected  = errors.New("originating task is disconnected; reconnect the same attachment")
 	ErrNotController = errors.New("only the elected controller may submit")
 	ErrSequence      = errors.New("event sequence is not monotonic")
 	ErrStaleProposal = errors.New("proposal is missing, changed, expired, cancelled, or stale")
@@ -34,6 +36,8 @@ type Broker struct {
 	decisions    map[string]Decision
 	proposals    map[string]Proposal
 	disconnected bool
+	closed       bool
+	leases       *LeaseManager
 }
 
 func NewBroker(attachmentID, taskSecret string) *Broker {
@@ -46,6 +50,12 @@ func NewBroker(attachmentID, taskSecret string) *Broker {
 		decisions:    make(map[string]Decision),
 		proposals:    make(map[string]Proposal),
 	}
+}
+
+func NewBrokerWithLeases(attachmentID, taskSecret string, reloadGrace, taskTTL time.Duration) *Broker {
+	broker := NewBroker(attachmentID, taskSecret)
+	broker.leases = NewLeaseManager(attachmentID, reloadGrace, taskTTL)
+	return broker
 }
 
 func (b *Broker) Attachment() Attachment {
@@ -61,6 +71,12 @@ func (b *Broker) AuthorizeTask(secret string) bool {
 func (b *Broker) SubmitTurn(turn Turn) (Turn, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		return Turn{}, ErrClosed
+	}
+	if b.leases != nil && !b.leases.TaskConnected() {
+		return Turn{}, ErrDisconnected
+	}
 	if existing, ok := b.turns[turn.ID]; ok {
 		if reflect.DeepEqual(existing, turn) {
 			return existing, nil
@@ -91,6 +107,10 @@ func (b *Broker) WaitTurn(ctx context.Context, attachmentID string) (Turn, error
 	}
 	for {
 		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return Turn{}, ErrClosed
+		}
 		if b.active != nil {
 			turn := *b.active
 			b.mu.Unlock()
@@ -109,6 +129,9 @@ func (b *Broker) WaitTurn(ctx context.Context, attachmentID string) (Turn, error
 func (b *Broker) Publish(event Event) (Event, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		return Event{}, ErrClosed
+	}
 	if existing, ok := b.eventIDs[event.ID]; ok {
 		if reflect.DeepEqual(existing, event) {
 			return existing, nil
@@ -143,6 +166,9 @@ func (b *Broker) Publish(event Event) (Event, error) {
 func (b *Broker) Decide(decision Decision) (Decision, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		return Decision{}, ErrClosed
+	}
 	if existing, ok := b.decisions[decision.ID]; ok {
 		if reflect.DeepEqual(existing, decision) {
 			return existing, nil
@@ -169,6 +195,10 @@ func (b *Broker) WaitDecision(ctx context.Context, actionID string) (Decision, e
 	}
 	for {
 		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return Decision{}, ErrClosed
+		}
 		for _, decision := range b.decisions {
 			if decision.ActionID == actionID {
 				b.mu.Unlock()
@@ -187,6 +217,58 @@ func (b *Broker) WaitDecision(ctx context.Context, actionID string) (Decision, e
 		case <-wait:
 		}
 	}
+}
+
+func (b *Broker) TaskHeartbeat(attachmentID string) error {
+	if b.leases == nil {
+		return nil
+	}
+	err := b.leases.TaskHeartbeat(attachmentID)
+	if err == nil {
+		b.mu.Lock()
+		b.disconnected = false
+		b.mu.Unlock()
+	}
+	return err
+}
+
+func (b *Broker) BrowserHeartbeat(browserID string) BrowserRole {
+	if b.leases == nil {
+		return BrowserController
+	}
+	role := b.leases.BrowserHeartbeat(browserID)
+	if role == BrowserController {
+		b.mu.Lock()
+		if b.active == nil {
+			b.controllerID = browserID
+		}
+		b.mu.Unlock()
+	}
+	return role
+}
+
+func (b *Broker) BrowserRelease(browserID string) {
+	if b.leases != nil {
+		b.leases.BrowserRelease(browserID)
+	}
+}
+
+func (b *Broker) Close() {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.closed = true
+	for id, proposal := range b.proposals {
+		proposal.Cancelled = true
+		b.proposals[id] = proposal
+	}
+	if b.leases != nil {
+		b.leases.Close()
+	}
+	b.signalLocked()
+	b.mu.Unlock()
 }
 
 func (b *Broker) Replay(after uint64) []Event {

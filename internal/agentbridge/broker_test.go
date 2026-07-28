@@ -46,6 +46,77 @@ func TestBrokerAllowsOnlyOneControllerAndActiveTurn(t *testing.T) {
 	}
 }
 
+func TestBrokerShutdownWakesWaitersAndFreezesSubmissions(t *testing.T) {
+	broker := NewBroker("attachment-1", "task-secret")
+	waited := make(chan error, 1)
+	go func() {
+		_, err := broker.WaitTurn(context.Background(), "attachment-1")
+		waited <- err
+	}()
+	broker.Close()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("wait error = %v, want ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not wake task waiter")
+	}
+	if _, err := broker.SubmitTurn(Turn{ID: "turn", ControllerID: "tab", Text: "question"}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("submit after shutdown error = %v", err)
+	}
+}
+
+func TestBrokerTaskExpiryFreezesSubmissionAndReconnects(t *testing.T) {
+	broker := NewBrokerWithLeases("attachment-1", "task-secret", time.Minute, 20*time.Millisecond)
+	defer broker.Close()
+	if err := broker.TaskHeartbeat("attachment-1"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if _, err := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "tab", Text: "question"}); !errors.Is(err, ErrDisconnected) {
+		t.Fatalf("submit with expired task error = %v", err)
+	}
+	if err := broker.TaskHeartbeat("attachment-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "tab", Text: "question"}); err != nil {
+		t.Fatalf("submit after reconnect: %v", err)
+	}
+}
+
+func TestBrokerObserverTakesOverAfterControllerReleaseWithoutDuplicatingTurn(t *testing.T) {
+	broker := NewBrokerWithLeases("attachment-1", "task-secret", 15*time.Millisecond, time.Minute)
+	defer broker.Close()
+	if err := broker.TaskHeartbeat("attachment-1"); err != nil {
+		t.Fatal(err)
+	}
+	if role := broker.BrowserHeartbeat("tab-1"); role != BrowserController {
+		t.Fatalf("tab-1 role = %q", role)
+	}
+	if role := broker.BrowserHeartbeat("tab-2"); role != BrowserObserver {
+		t.Fatalf("tab-2 role = %q", role)
+	}
+	turn, err := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "tab-1", Text: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Publish(Event{ID: "done-1", TurnID: turn.ID, Sequence: 1, Type: EventCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	broker.BrowserRelease("tab-1")
+	time.Sleep(20 * time.Millisecond)
+	if role := broker.BrowserHeartbeat("tab-2"); role != BrowserController {
+		t.Fatalf("observer takeover role = %q", role)
+	}
+	if _, err := broker.SubmitTurn(Turn{ID: "turn-2", ControllerID: "tab-2", Text: "second"}); err != nil {
+		t.Fatalf("new controller submit: %v", err)
+	}
+	if len(broker.turns) != 2 {
+		t.Fatalf("turn count = %d, want 2 unique turns", len(broker.turns))
+	}
+}
+
 func TestBrokerReplayAndDisconnectMarksInterruptedTurn(t *testing.T) {
 	broker := NewBroker("attachment-1", "task-secret")
 	turn, _ := broker.SubmitTurn(Turn{ID: "turn-1", ControllerID: "controller-1", Text: "question"})

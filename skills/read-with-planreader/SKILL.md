@@ -35,6 +35,9 @@ Use Planreader as the single source of truth for preparing the human-readable na
 
 - After the reader reports that its conversation bridge is ready, run
   `planreader bridge probe --provider PROVIDER`.
+- Read the descriptor path printed by Planreader only for bridge commands. Do
+  not print its contents, copy its task secret into chat, or persist it. The
+  descriptor is deleted when the reader exits.
 - Continue only when the result says the current task is supported. Never
   resume, fork, or start another provider session as a fallback.
 - Keep this exact task inside the bridge loop: wait for a reader turn, handle it
