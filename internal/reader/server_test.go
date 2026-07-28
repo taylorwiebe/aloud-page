@@ -504,6 +504,53 @@ func TestReaderHandlerServesDocumentData(t *testing.T) {
 	}
 }
 
+func TestLegacyReaderHasNoConversationEndpointOrAttachmentMetadata(t *testing.T) {
+	handler := newReaderHandler(ReaderDocument{
+		FileName: "plan.md",
+		Narration: narration.Narration{
+			Title: "Plan", Sections: []narration.NarrationSection{{ID: "intro", Heading: "Intro", Sentences: []string{"Hello."}}},
+		},
+	}, "secret-token")
+
+	conversation := httptest.NewRecorder()
+	handler.ServeHTTP(conversation, httptest.NewRequest(http.MethodGet, "/reader/secret-token/api/conversation/browser/events", nil))
+	if conversation.Code != http.StatusNotFound {
+		t.Fatalf("legacy conversation endpoint status = %d, want 404", conversation.Code)
+	}
+
+	data := httptest.NewRecorder()
+	handler.ServeHTTP(data, httptest.NewRequest(http.MethodGet, "/reader/secret-token/data.json", nil))
+	body := data.Body.String()
+	for _, forbidden := range []string{"task_secret", "attachment_id", "CODEX_THREAD_ID", "canonical_path", "raw_source"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("legacy browser payload leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestAttachedBrowserPayloadOmitsTaskCredentialsAndServerState(t *testing.T) {
+	t.Setenv("PLANREADER_PRIVATE_TEST_VALUE", "environment-secret")
+	state := testDocumentState(t, "# One\n\nVisible source.\n", friendlyForSource("Visible source."))
+	lifecycle := newAgentLifecycle(func() {}, time.Minute, time.Hour)
+	defer lifecycle.Close()
+	broker := agentbridge.NewBroker("attachment-private", "task-private")
+	handler := newReaderHandlerWithBridge(ReaderDocument{
+		FileName: "plan.md", State: state, CanEdit: true,
+	}, "browser-token", nil, lifecycle, agentbridge.NewHTTPHandler(broker, ""))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/reader/browser-token/data.json", nil))
+	body := response.Body.String()
+	for _, forbidden := range []string{
+		"task-private", "attachment-private", "environment-secret", state.canonicalPath,
+		"canonical_path", "raw_source", "content_digest", "PLANREADER_PRIVATE_TEST_VALUE",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("attached browser payload leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestAgentManagedReaderDataEnablesBrowserHeartbeat(t *testing.T) {
 	lifecycle := newAgentLifecycle(func() {}, time.Minute, time.Hour)
 	defer lifecycle.Close()

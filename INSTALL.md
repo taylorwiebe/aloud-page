@@ -20,6 +20,12 @@ The installer downloads the latest signed and notarized Apple-silicon release, v
 
 Start a new Claude or Codex session after installation so it can load the new skill.
 
+The installed skill includes the same-task conversation loop shipped with the
+Planreader executable. Codex can attach only when its current task passes the
+capability gate. Claude Code can still create ordinary private narrations, but
+attached conversation is currently unsupported and is never replaced with a
+resumed or newly launched session.
+
 Planreader installs its skill into these detected user locations:
 
 - Claude Code: `~/.claude/skills/read-with-planreader`
@@ -42,6 +48,10 @@ planreader update
 ```
 
 You can also ask Claude or Codex to “update Planreader.” Start a new agent session after an update so it loads the refreshed skill. Re-running the bootstrap installer is safe and converges on the latest release.
+
+Installation and update replace a Planreader-managed skill as one unit with the
+embedded copy from that release, so the executable and its bridge loop stay in
+sync. They do not overwrite a same-named skill Planreader does not own.
 
 Source builds identify themselves as such. Switching one to the official release requires an explicit choice:
 

@@ -96,6 +96,14 @@ resume or launch a replacement session.
 An installed provider or a resumable session is not sufficient evidence. A
 provider is enabled only while its current task passes every gate.
 
+Questions, selected original or friendly passages, and the source context needed
+to answer them are intentionally returned to that already-attached task. The
+task can use its existing conversation, repository workspace, project
+instructions, and tools. If the reader requests a source or repository change,
+the task can propose it, but Planreader waits for an immutable semantic decision
+and the provider still enforces its native filesystem, network, and tool
+authorization.
+
 The task receives an owner-only descriptor path; its separate task secret is
 never placed in command arguments or conversation text. Reader approvals apply
 to one immutable semantic proposal and cannot override a native provider
@@ -103,6 +111,24 @@ authorization denial. Unrecognized provider events are rendered as
 non-actionable status, and reconnect succeeds only for the same attachment and
 task credential. Planreader never starts, resumes, or relabels another session
 as a fallback.
+
+The conversation transcript and draft are retained only for the active reader
+session in memory and browser session storage. They are not written to a
+Planreader transcript database and are discarded with that browser session.
+The browser receives rendered source and friendly content, revisions, and
+bounded selection mappings. It never receives the task secret, hidden agent
+instructions, provider environment, canonical source path, unrestricted source
+text, or source digest.
+
+Prepared `data.json` remains readable but does not prove the identity or current
+digest of an authoritative Markdown file. Without an attached supported task,
+questions are unavailable. When prepared data is opened by an attached task,
+questions can use its presentation content, but source and repository changes
+remain unavailable because Planreader cannot safely verify or refresh the
+authoritative source.
+
+Ordinary launches without `--agent-managed` keep the original private,
+read-only narration experience and expose no conversation endpoint.
 
 ## Development
 

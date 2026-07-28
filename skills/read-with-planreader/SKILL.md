@@ -101,6 +101,14 @@ Let Planreader create the actual document the user will hear. Its application-ow
 
 Use `--prepared DATA.json` only when the user asks to avoid regeneration and the prepared data is known to belong to the same source document. Never substitute unrelated or stale prepared narration.
 
+Prepared narration has no verified authoritative source identity. Questions
+require an attached, supported current task; without one, explain that
+conversation is unavailable. When a supported current task opens prepared
+narration, it may answer questions about the visible presentation content, but
+source or repository changes are unavailable because Planreader cannot verify
+the canonical source path and digest or safely refresh both representations.
+Do not propose or claim attached edits in prepared mode.
+
 ## Handle failures
 
 - If the selected provider is missing, signed out, rate-limited, or out of quota, report that exact condition and leave the provider unchanged.

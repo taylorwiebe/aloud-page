@@ -128,6 +128,9 @@ func TestReadPreparedDocumentReusesCompleteReaderData(t *testing.T) {
 	if got.CanEdit {
 		t.Fatal("prepared reader claims edit capability without verified source identity")
 	}
+	if got.State != nil || got.DocumentRevision != "" || got.FriendlyRevision != "" {
+		t.Fatal("prepared reader retained unverified authoritative source identity")
+	}
 }
 
 func TestReaderDocumentPayloadOmitsPrivateDocumentState(t *testing.T) {
